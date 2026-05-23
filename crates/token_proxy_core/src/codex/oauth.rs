@@ -8,6 +8,37 @@ use super::error::format_oauth_status_error;
 const OPENAI_AUTH_URL: &str = "https://auth.openai.com/oauth/authorize";
 const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+const OPENAI_MOBILE_CLIENT_ID: &str = "app_LlGpXReQgckcGGUo2JrYvtJK";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodexRefreshTokenClient {
+    Codex,
+    Mobile,
+}
+
+impl CodexRefreshTokenClient {
+    pub fn from_client_id(client_id: &str) -> Option<Self> {
+        match client_id.trim() {
+            OPENAI_CLIENT_ID => Some(Self::Codex),
+            OPENAI_MOBILE_CLIENT_ID => Some(Self::Mobile),
+            _ => None,
+        }
+    }
+
+    pub fn client_id(self) -> &'static str {
+        match self {
+            Self::Codex => OPENAI_CLIENT_ID,
+            Self::Mobile => OPENAI_MOBILE_CLIENT_ID,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Mobile => "mobile",
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct CodexOAuthClient {
@@ -59,19 +90,24 @@ impl CodexOAuthClient {
         self.post_form(payload).await
     }
 
-    pub(crate) async fn refresh_token(
+    pub(crate) async fn refresh_token_with_client(
         &self,
         refresh_token: &str,
+        client: CodexRefreshTokenClient,
     ) -> Result<CodexTokenResponse, String> {
         let payload = TokenExchangeRequest {
             grant_type: "refresh_token".to_string(),
-            client_id: OPENAI_CLIENT_ID.to_string(),
+            client_id: client.client_id().to_string(),
             code: String::new(),
             redirect_uri: String::new(),
             code_verifier: String::new(),
             refresh_token: Some(refresh_token.to_string()),
             scope: Some("openid profile email".to_string()),
         };
+        tracing::debug!(
+            client = client.as_str(),
+            "codex refresh token exchange start"
+        );
         self.post_form(payload).await
     }
 
@@ -138,4 +174,34 @@ pub(crate) struct CodexTokenResponse {
     pub(crate) refresh_token: String,
     pub(crate) id_token: String,
     pub(crate) expires_in: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_token_client_ids_match_openai_clients() {
+        assert_eq!(
+            CodexRefreshTokenClient::Codex.client_id(),
+            "app_EMoamEEZ73f0CkXaXp7hrann"
+        );
+        assert_eq!(
+            CodexRefreshTokenClient::Mobile.client_id(),
+            "app_LlGpXReQgckcGGUo2JrYvtJK"
+        );
+    }
+
+    #[test]
+    fn refresh_token_client_resolves_persisted_client_ids() {
+        assert_eq!(
+            CodexRefreshTokenClient::from_client_id("app_EMoamEEZ73f0CkXaXp7hrann"),
+            Some(CodexRefreshTokenClient::Codex)
+        );
+        assert_eq!(
+            CodexRefreshTokenClient::from_client_id("app_LlGpXReQgckcGGUo2JrYvtJK"),
+            Some(CodexRefreshTokenClient::Mobile)
+        );
+        assert_eq!(CodexRefreshTokenClient::from_client_id("unknown"), None);
+    }
 }
