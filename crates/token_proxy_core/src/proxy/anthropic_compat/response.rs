@@ -30,6 +30,7 @@ pub(super) fn responses_response_to_anthropic(
     let model = object
         .get("model")
         .and_then(Value::as_str)
+        .filter(|_| model_hint.is_none())
         .or(model_hint)
         .unwrap_or("unknown");
 

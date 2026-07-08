@@ -171,6 +171,20 @@ fn responses_request_to_codex_preserves_gpt_5_5_pro_model() {
 }
 
 #[test]
+fn responses_request_to_codex_prefers_model_hint_over_body_model() {
+    let input = json!({
+        "model": "claude-3-5-sonnet",
+        "input": "hi"
+    });
+
+    let output = responses_request_to_codex(&Bytes::from(input.to_string()), Some("gpt-5.5"))
+        .expect("convert responses request");
+    let value: serde_json::Value = serde_json::from_slice(&output).expect("json");
+
+    assert_eq!(value["model"], "gpt-5.5");
+}
+
+#[test]
 fn responses_request_to_codex_preserves_gpt_5_6_models() {
     let cases = [
         ("openai/gpt-5.6-sol", "gpt-5.6-sol"),

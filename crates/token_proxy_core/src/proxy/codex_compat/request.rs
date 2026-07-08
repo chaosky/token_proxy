@@ -511,6 +511,7 @@ fn normalize_responses_payload(
     let model = object
         .get("model")
         .and_then(Value::as_str)
+        .filter(|_| model_hint.is_none())
         .or(model_hint)
         .unwrap_or_default();
     let model = normalize_codex_model(model);
@@ -786,11 +787,14 @@ fn extract_system_messages_from_input(items: Vec<Value>) -> (Vec<Value>, Vec<Str
             output.push(item);
             continue;
         };
-        if object.get("role").and_then(Value::as_str) != Some("system") {
+        let role = object.get("role").and_then(Value::as_str);
+        if !matches!(role, Some("system" | "developer")) {
             output.push(item);
             continue;
         }
-        object.insert("role".to_string(), Value::String("developer".to_string()));
+        if role == Some("system") {
+            object.insert("role".to_string(), Value::String("developer".to_string()));
+        }
         if let Some(text) = extract_text_from_content(object.get("content")) {
             instructions.push(text);
         }

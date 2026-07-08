@@ -118,7 +118,8 @@ pub(crate) async fn transform_request_body_with_prompt_cache_key(
         FormatTransform::AnthropicToChat => {
             let intermediate =
                 anthropic_compat::anthropic_request_to_responses(body, http_clients).await?;
-            responses_request_to_chat(&intermediate)
+            let chat = responses_request_to_chat(&intermediate)?;
+            preserve_anthropic_max_tokens_for_chat(body, &chat)
         }
         FormatTransform::GeminiToAnthropic => {
             gemini_request_to_anthropic(body, http_clients, model_hint).await
@@ -363,14 +364,6 @@ fn chat_request_to_responses_with_prompt_cache_key(
     if object.get("web_search_options").is_some() {
         append_responses_web_search_tool(&mut output, object.get("web_search_options"));
     }
-    if let Some(reasoning) =
-        map_chat_reasoning_effort_to_responses_reasoning(object.get("reasoning_effort"))
-    {
-        output.insert("reasoning".to_string(), reasoning);
-    }
-    if object.get("web_search_options").is_some() {
-        append_responses_web_search_tool(&mut output, object.get("web_search_options"));
-    }
 
     serde_json::to_vec(&Value::Object(output))
         .map(Bytes::from)
@@ -546,7 +539,71 @@ async fn anthropic_request_to_gemini(
 ) -> Result<Bytes, String> {
     let intermediate = anthropic_compat::anthropic_request_to_responses(body, http_clients).await?;
     let intermediate = responses_request_to_chat(&intermediate)?;
-    gemini_compat::chat_request_to_gemini(&intermediate)
+    let gemini = gemini_compat::chat_request_to_gemini(&intermediate)?;
+    preserve_anthropic_max_tokens_for_gemini(body, &gemini)
+}
+
+fn preserve_anthropic_max_tokens_for_chat(
+    anthropic_body: &Bytes,
+    chat_body: &Bytes,
+) -> Result<Bytes, String> {
+    let Some(max_tokens) = anthropic_max_tokens(anthropic_body)? else {
+        return Ok(chat_body.clone());
+    };
+    update_json_body(chat_body, |object| {
+        object.insert(
+            "max_completion_tokens".to_string(),
+            Value::Number(max_tokens.into()),
+        );
+    })
+}
+
+fn preserve_anthropic_max_tokens_for_gemini(
+    anthropic_body: &Bytes,
+    gemini_body: &Bytes,
+) -> Result<Bytes, String> {
+    let Some(max_tokens) = anthropic_max_tokens(anthropic_body)? else {
+        return Ok(gemini_body.clone());
+    };
+    update_json_body(gemini_body, |object| {
+        let generation_config = object
+            .entry("generationConfig".to_string())
+            .or_insert_with(|| json!({}));
+        if !generation_config.is_object() {
+            *generation_config = json!({});
+        }
+        if let Some(config) = generation_config.as_object_mut() {
+            config.insert(
+                "maxOutputTokens".to_string(),
+                Value::Number(max_tokens.into()),
+            );
+        }
+    })
+}
+
+fn anthropic_max_tokens(body: &Bytes) -> Result<Option<i64>, String> {
+    let value: Value =
+        serde_json::from_slice(body).map_err(|_| "Request body must be JSON.".to_string())?;
+    Ok(value
+        .as_object()
+        .and_then(|object| object.get("max_tokens"))
+        .and_then(Value::as_i64)
+        .filter(|value| *value > 0))
+}
+
+fn update_json_body(
+    body: &Bytes,
+    update: impl FnOnce(&mut Map<String, Value>),
+) -> Result<Bytes, String> {
+    let value: Value = serde_json::from_slice(body)
+        .map_err(|_| "Converted request body must be JSON.".to_string())?;
+    let Some(mut object) = value.as_object().cloned() else {
+        return Err("Converted request body must be a JSON object.".to_string());
+    };
+    update(&mut object);
+    serde_json::to_vec(&Value::Object(object))
+        .map(Bytes::from)
+        .map_err(|err| format!("Failed to serialize request: {err}"))
 }
 
 fn gemini_response_to_anthropic(bytes: &Bytes, model_hint: Option<&str>) -> Result<Bytes, String> {
@@ -787,6 +844,7 @@ fn responses_response_to_chat(bytes: &Bytes, model_hint: Option<&str>) -> Result
     let model = object
         .get("model")
         .and_then(Value::as_str)
+        .filter(|_| model_hint.is_none())
         .or(model_hint)
         .unwrap_or("unknown");
 

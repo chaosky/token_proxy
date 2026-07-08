@@ -48,3 +48,5 @@ fn transform_response_value(
 mod part1;
 #[path = "tests_part2.rs"]
 mod part2;
+#[path = "tests_part3.rs"]
+mod part3;

@@ -1102,7 +1102,7 @@ fn responses_compact_to_codex_strips_reasoning_include() {
     assert!(value.get("include").is_none());
     assert_eq!(value["store"], json!(false));
     assert_eq!(value["stream"], json!(true));
-    assert_eq!(value["model"], json!("gpt-5.4"));
+    assert_eq!(value["model"], json!("gpt-5-codex"));
 }
 
 #[test]
