@@ -157,8 +157,10 @@ fn anthropic_count_tokens_request_to_responses_input_tokens_filters_generation_f
     let value = json_from_bytes(output);
 
     assert_eq!(value["model"], json!("gpt-5.4"));
-    assert_eq!(value["instructions"], json!("count only"));
-    assert_eq!(value["input"][0]["role"], json!("user"));
+    assert!(value.get("instructions").is_none());
+    assert_eq!(value["input"][0]["role"], json!("developer"));
+    assert_eq!(value["input"][0]["content"][0]["text"], json!("count only"));
+    assert_eq!(value["input"][1]["role"], json!("user"));
     assert!(value.get("temperature").is_none());
     assert!(value.get("top_p").is_none());
     assert!(value.get("stream").is_none());

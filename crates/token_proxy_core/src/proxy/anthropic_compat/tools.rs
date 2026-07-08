@@ -112,10 +112,25 @@ fn map_anthropic_tool(value: &Value) -> Option<Value> {
     if let Some(description) = tool.get("description") {
         out.insert("description".to_string(), description.clone());
     }
-    if let Some(input_schema) = tool.get("input_schema") {
-        out.insert("parameters".to_string(), input_schema.clone());
-    }
+    out.insert(
+        "parameters".to_string(),
+        normalize_anthropic_input_schema(tool.get("input_schema")),
+    );
+    out.insert("strict".to_string(), Value::Bool(false));
     Some(Value::Object(out))
+}
+
+fn normalize_anthropic_input_schema(input_schema: Option<&Value>) -> Value {
+    let Some(Value::Object(schema)) = input_schema else {
+        return json!({ "type": "object", "properties": {} });
+    };
+    let mut schema = schema.clone();
+    if schema.get("type").and_then(Value::as_str) == Some("object")
+        && !schema.contains_key("properties")
+    {
+        schema.insert("properties".to_string(), json!({}));
+    }
+    Value::Object(schema)
 }
 
 pub(super) fn map_responses_tool_choice_to_anthropic(

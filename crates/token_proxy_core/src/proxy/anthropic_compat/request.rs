@@ -7,6 +7,8 @@ use super::media;
 use super::tools;
 use crate::proxy::codex_tool_types::is_codex_tool_call_output_item_type;
 
+const MIN_RESPONSES_MAX_OUTPUT_TOKENS: i64 = 128;
+
 pub(super) async fn responses_request_to_anthropic(
     body: &Bytes,
     http_clients: &ProxyHttpClients,
@@ -120,12 +122,14 @@ pub(super) async fn anthropic_request_to_responses(
 
     let mut input_items = Vec::new();
 
-    let mut instructions_texts = Vec::new();
     if let Some(system) = object.get("system") {
-        if let Some(text) = claude_system_to_text(system) {
-            if !text.trim().is_empty() {
-                instructions_texts.push(text);
-            }
+        let system_parts = claude_system_to_responses_parts(system);
+        if !system_parts.is_empty() {
+            input_items.push(json!({
+                "type": "message",
+                "role": "developer",
+                "content": system_parts
+            }));
         }
     }
 
@@ -140,14 +144,21 @@ pub(super) async fn anthropic_request_to_responses(
     out.insert("model".to_string(), Value::String(model.to_string()));
     out.insert(
         "max_output_tokens".to_string(),
-        Value::Number(max_output_tokens.into()),
+        Value::Number(
+            max_output_tokens
+                .max(MIN_RESPONSES_MAX_OUTPUT_TOKENS)
+                .into(),
+        ),
     );
     out.insert("stream".to_string(), Value::Bool(stream));
     out.insert("input".to_string(), Value::Array(input_items));
-
-    if let Some(instructions) = join_system_texts(instructions_texts) {
-        out.insert("instructions".to_string(), Value::String(instructions));
-    }
+    out.insert(
+        "include".to_string(),
+        json!(["reasoning.encrypted_content"]),
+    );
+    out.insert("store".to_string(), Value::Bool(false));
+    out.insert("parallel_tool_calls".to_string(), Value::Bool(true));
+    out.insert("text".to_string(), json!({ "verbosity": "medium" }));
 
     if !model::is_openai_responses_reasoning_model(model) {
         if let Some(temperature) = object.get("temperature") {
@@ -158,7 +169,10 @@ pub(super) async fn anthropic_request_to_responses(
         }
     }
 
-    if let Some(reasoning) = map_anthropic_thinking_to_responses_reasoning(object.get("thinking")) {
+    if let Some(reasoning) = map_anthropic_thinking_to_responses_reasoning(
+        object.get("thinking"),
+        object.get("output_config"),
+    ) {
         out.insert("reasoning".to_string(), reasoning);
     }
 
@@ -166,7 +180,10 @@ pub(super) async fn anthropic_request_to_responses(
         object.get("output_format"),
         object.get("output_config"),
     ) {
-        out.insert("text".to_string(), text_format);
+        out.insert(
+            "text".to_string(),
+            merge_responses_text_defaults(text_format),
+        );
     }
 
     if let Some(context_management) =
@@ -496,6 +513,8 @@ fn claude_message_to_responses_input_items(
     let blocks = claude_content_to_blocks(content);
 
     let mut message_parts = Vec::new();
+    let mut function_call_items = Vec::new();
+    let mut function_output_items = Vec::new();
     let text_part_type = match role {
         // OpenAI Responses schema expects assistant messages in `input` to use output types.
         // This avoids errors like: "Invalid value: 'input_text'. Supported values are: 'output_text' and 'refusal'."
@@ -535,14 +554,6 @@ fn claude_message_to_responses_input_items(
             _ => {}
         }
     }
-    if !message_parts.is_empty() {
-        input_items.push(json!({
-            "type": "message",
-            "role": role,
-            "content": message_parts
-        }));
-    }
-
     for block in blocks {
         let Some(block) = block.as_object() else {
             continue;
@@ -557,7 +568,7 @@ fn claude_message_to_responses_input_items(
                 let name = block.get("name").and_then(Value::as_str).unwrap_or("");
                 let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
                 let arguments = serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string());
-                input_items.push(json!({
+                function_call_items.push(json!({
                     "type": "function_call",
                     "call_id": call_id,
                     "name": name,
@@ -570,10 +581,9 @@ fn claude_message_to_responses_input_items(
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 let output_raw = block.get("content").cloned().unwrap_or_else(|| json!(""));
-                let output_text = match &output_raw {
-                    Value::String(text) => text.clone(),
-                    other => serde_json::to_string(other).unwrap_or_default(),
-                };
+                let (output_text, mut media_parts) =
+                    claude_tool_result_content_to_responses_output(&output_raw);
+                message_parts.append(&mut media_parts);
                 let is_error = block
                     .get("is_error")
                     .and_then(Value::as_bool)
@@ -585,32 +595,102 @@ fn claude_message_to_responses_input_items(
                 if is_error {
                     item.insert("is_error".to_string(), Value::Bool(true));
                 }
-                if !matches!(output_raw, Value::String(_)) {
-                    item.insert("output_parts".to_string(), output_raw);
-                }
-                input_items.push(Value::Object(item));
+                function_output_items.push(Value::Object(item));
             }
             _ => {}
         }
     }
 
+    if role == "user" {
+        input_items.append(&mut function_output_items);
+    }
+    if !message_parts.is_empty() {
+        input_items.push(json!({
+            "type": "message",
+            "role": role,
+            "content": message_parts
+        }));
+    }
+    if role != "user" {
+        input_items.append(&mut function_output_items);
+    }
+    input_items.append(&mut function_call_items);
+
     Ok(())
 }
 
-fn claude_system_to_text(value: &Value) -> Option<String> {
+fn claude_system_to_responses_parts(value: &Value) -> Vec<Value> {
     match value {
-        Value::String(text) => Some(text.to_string()),
-        Value::Array(items) => {
-            let texts = items
-                .iter()
-                .filter_map(|item| item.as_object())
-                .filter(|item| item.get("type").and_then(Value::as_str) == Some("text"))
-                .filter_map(|item| item.get("text").and_then(Value::as_str))
-                .map(|text| text.to_string())
-                .collect::<Vec<_>>();
-            join_system_texts(texts)
+        Value::String(text) => {
+            let text = text.trim();
+            if text.is_empty() || is_anthropic_billing_header(text) {
+                Vec::new()
+            } else {
+                vec![json!({ "type": "input_text", "text": text })]
+            }
         }
-        _ => None,
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item.as_object())
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|text| !text.is_empty() && !is_anthropic_billing_header(text))
+            .map(|text| json!({ "type": "input_text", "text": text }))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn is_anthropic_billing_header(text: &str) -> bool {
+    text.starts_with("x-anthropic-billing-header: ")
+}
+
+fn claude_tool_result_content_to_responses_output(content: &Value) -> (String, Vec<Value>) {
+    match content {
+        Value::String(text) => (non_empty_tool_output(text), Vec::new()),
+        Value::Array(blocks) => {
+            let mut text_parts = Vec::new();
+            let mut media_parts = Vec::new();
+            for block in blocks {
+                let Some(block) = block.as_object() else {
+                    continue;
+                };
+                match block.get("type").and_then(Value::as_str).unwrap_or("") {
+                    "text" => {
+                        if let Some(text) = block.get("text").and_then(Value::as_str) {
+                            if !text.is_empty() {
+                                text_parts.push(text.to_string());
+                            }
+                        }
+                    }
+                    "image" => {
+                        if let Some(part) = media::claude_image_block_to_input_image_part(block) {
+                            media_parts.push(part);
+                        }
+                    }
+                    "document" => {
+                        if let Some(part) = media::claude_document_block_to_input_file_part(block) {
+                            media_parts.push(part);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            (non_empty_tool_output(&text_parts.join("\n\n")), media_parts)
+        }
+        other => (
+            non_empty_tool_output(&serde_json::to_string(other).unwrap_or_default()),
+            Vec::new(),
+        ),
+    }
+}
+
+fn non_empty_tool_output(text: &str) -> String {
+    if text.is_empty() {
+        "(empty)".to_string()
+    } else {
+        text.to_string()
     }
 }
 
@@ -1059,24 +1139,33 @@ fn ensure_claude_content_array_in_place(content: &mut Value) {
     *content = Value::Array(Vec::new());
 }
 
-fn map_anthropic_thinking_to_responses_reasoning(value: Option<&Value>) -> Option<Value> {
+fn map_anthropic_thinking_to_responses_reasoning(
+    value: Option<&Value>,
+    output_config: Option<&Value>,
+) -> Option<Value> {
     let thinking = value?.as_object()?;
-    if thinking.get("type").and_then(Value::as_str) != Some("enabled") {
-        return None;
-    }
-
-    let budget = thinking
-        .get("budget_tokens")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let effort = if budget >= 10_000 {
-        "high"
-    } else if budget >= 5_000 {
-        "medium"
-    } else if budget >= 2_000 {
-        "low"
-    } else {
-        "minimal"
+    let effort = match thinking.get("type").and_then(Value::as_str) {
+        Some("enabled") => {
+            let budget = thinking
+                .get("budget_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            if budget >= 10_000 {
+                "high"
+            } else if budget >= 5_000 {
+                "medium"
+            } else if budget >= 2_000 {
+                "low"
+            } else {
+                "minimal"
+            }
+        }
+        Some("adaptive") => output_config
+            .and_then(Value::as_object)
+            .and_then(|config| config.get("effort"))
+            .and_then(Value::as_str)
+            .unwrap_or("medium"),
+        _ => return None,
     };
 
     Some(json!({
@@ -1109,6 +1198,16 @@ fn map_anthropic_output_format_to_responses_text(
             "strict": true
         }
     }))
+}
+
+fn merge_responses_text_defaults(mut text: Value) -> Value {
+    let Some(object) = text.as_object_mut() else {
+        return json!({ "verbosity": "medium" });
+    };
+    object
+        .entry("verbosity".to_string())
+        .or_insert_with(|| Value::String("medium".to_string()));
+    text
 }
 
 fn map_anthropic_context_management_to_responses(value: Option<&Value>) -> Option<Value> {

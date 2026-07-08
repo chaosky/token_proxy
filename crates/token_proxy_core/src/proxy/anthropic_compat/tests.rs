@@ -60,33 +60,42 @@ fn anthropic_request_to_responses_maps_tools_and_tool_blocks() {
     let value = json_from_bytes(output);
 
     assert_eq!(value["model"], json!("claude-3-5-sonnet"));
-    assert_eq!(value["max_output_tokens"], json!(123));
+    assert_eq!(value["max_output_tokens"], json!(128));
     assert_eq!(value["stream"], json!(true));
-    assert_eq!(value["instructions"], json!("sys"));
+    assert!(value.get("instructions").is_none());
+    assert_eq!(value["include"], json!(["reasoning.encrypted_content"]));
+    assert_eq!(value["store"], json!(false));
+    assert_eq!(value["parallel_tool_calls"], json!(false));
+    assert_eq!(value["text"]["verbosity"], json!("medium"));
 
     assert_eq!(value["tools"][0]["type"], json!("function"));
     assert_eq!(value["tools"][0]["name"], json!("search"));
     assert_eq!(value["tools"][0]["parameters"]["required"], json!(["q"]));
+    assert_eq!(value["tools"][0]["strict"], json!(false));
 
     assert_eq!(value["tool_choice"]["type"], json!("function"));
     assert_eq!(value["tool_choice"]["name"], json!("search"));
-    assert_eq!(value["parallel_tool_calls"], json!(false));
     assert_eq!(value["stop"], json!(["a", "b"]));
 
     let input_items = value["input"].as_array().expect("input array");
     assert_eq!(input_items[0]["type"], json!("message"));
-    assert_eq!(input_items[0]["role"], json!("user"));
+    assert_eq!(input_items[0]["role"], json!("developer"));
     assert_eq!(input_items[0]["content"][0]["type"], json!("input_text"));
-    assert_eq!(input_items[0]["content"][0]["text"], json!("hi"));
+    assert_eq!(input_items[0]["content"][0]["text"], json!("sys"));
 
-    assert_eq!(input_items[1]["type"], json!("function_call"));
-    assert_eq!(input_items[1]["call_id"], json!("call_1"));
-    assert_eq!(input_items[1]["name"], json!("search"));
-    assert_eq!(input_items[1]["arguments"], json!("{\"q\":\"x\"}"));
+    assert_eq!(input_items[1]["type"], json!("message"));
+    assert_eq!(input_items[1]["role"], json!("user"));
+    assert_eq!(input_items[1]["content"][0]["type"], json!("input_text"));
+    assert_eq!(input_items[1]["content"][0]["text"], json!("hi"));
 
-    assert_eq!(input_items[2]["type"], json!("function_call_output"));
+    assert_eq!(input_items[2]["type"], json!("function_call"));
     assert_eq!(input_items[2]["call_id"], json!("call_1"));
-    assert_eq!(input_items[2]["output"], json!("ok"));
+    assert_eq!(input_items[2]["name"], json!("search"));
+    assert_eq!(input_items[2]["arguments"], json!("{\"q\":\"x\"}"));
+
+    assert_eq!(input_items[3]["type"], json!("function_call_output"));
+    assert_eq!(input_items[3]["call_id"], json!("call_1"));
+    assert_eq!(input_items[3]["output"], json!("ok"));
 }
 
 #[test]
@@ -164,6 +173,7 @@ fn anthropic_request_to_responses_maps_reasoning_context_and_structured_output()
     assert_eq!(value["reasoning"]["effort"], json!("medium"));
     assert_eq!(value["reasoning"]["summary"], json!("detailed"));
     assert_eq!(value["text"]["format"]["type"], json!("json_schema"));
+    assert_eq!(value["text"]["verbosity"], json!("medium"));
     assert_eq!(
         value["text"]["format"]["schema"]["required"],
         json!(["answer"])
@@ -177,16 +187,152 @@ fn anthropic_request_to_responses_maps_reasoning_context_and_structured_output()
     assert_eq!(value["tools"][0]["type"], json!("web_search_preview"));
 
     let input_items = value["input"].as_array().expect("input array");
-    assert_eq!(input_items.len(), 1);
+    assert_eq!(input_items.len(), 2);
     assert_eq!(input_items[0]["type"], json!("message"));
-    assert_eq!(input_items[0]["role"], json!("assistant"));
-    assert_eq!(input_items[0]["content"][0]["type"], json!("output_text"));
+    assert_eq!(input_items[0]["role"], json!("developer"));
+    assert_eq!(input_items[0]["content"][0]["text"], json!("sys"));
+    assert_eq!(input_items[1]["type"], json!("message"));
+    assert_eq!(input_items[1]["role"], json!("assistant"));
+    assert_eq!(input_items[1]["content"][0]["type"], json!("output_text"));
     assert_eq!(
-        input_items[0]["content"][0]["text"],
+        input_items[1]["content"][0]["text"],
         json!("chain-of-thought summary")
     );
-    assert_eq!(input_items[0]["content"][1]["type"], json!("output_text"));
-    assert_eq!(input_items[0]["content"][1]["text"], json!("draft answer"));
+    assert_eq!(input_items[1]["content"][1]["type"], json!("output_text"));
+    assert_eq!(input_items[1]["content"][1]["text"], json!("draft answer"));
+}
+
+#[test]
+fn anthropic_request_to_responses_filters_billing_header_and_maps_adaptive_thinking() {
+    let http_clients = ProxyHttpClients::new().expect("http clients");
+
+    let input = bytes_from_json(json!({
+        "model": "gpt-5.4-mini",
+        "max_tokens": 8,
+        "system": [
+            { "type": "text", "text": "x-anthropic-billing-header: keep-out" },
+            { "type": "text", "text": "real system" }
+        ],
+        "thinking": { "type": "adaptive" },
+        "output_config": { "effort": "high" },
+        "messages": [
+            { "role": "user", "content": "hi" }
+        ]
+    }));
+
+    let output = run_async(async {
+        anthropic_request_to_responses(&input, &http_clients)
+            .await
+            .expect("transform")
+    });
+    let value = json_from_bytes(output);
+    let input_items = value["input"].as_array().expect("input array");
+
+    assert_eq!(value["max_output_tokens"], json!(128));
+    assert_eq!(value["reasoning"]["effort"], json!("high"));
+    assert_eq!(value["reasoning"]["summary"], json!("detailed"));
+    assert_eq!(input_items[0]["role"], json!("developer"));
+    assert_eq!(
+        input_items[0]["content"].as_array().expect("system").len(),
+        1
+    );
+    assert_eq!(input_items[0]["content"][0]["text"], json!("real system"));
+}
+
+#[test]
+fn anthropic_request_to_responses_splits_tool_result_media_from_output_string() {
+    let http_clients = ProxyHttpClients::new().expect("http clients");
+
+    let input = bytes_from_json(json!({
+        "model": "claude-3-5-sonnet",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call_1",
+                        "content": [
+                            { "type": "text", "text": "visible text" },
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": "iVBORw0KGgo="
+                                }
+                            },
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "application/pdf",
+                                    "data": "JVBERi0xLjQK"
+                                }
+                            }
+                        ],
+                        "is_error": true
+                    }
+                ]
+            }
+        ]
+    }));
+
+    let output = run_async(async {
+        anthropic_request_to_responses(&input, &http_clients)
+            .await
+            .expect("transform")
+    });
+    let value = json_from_bytes(output);
+    let input_items = value["input"].as_array().expect("input array");
+
+    assert_eq!(input_items[0]["type"], json!("function_call_output"));
+    assert_eq!(input_items[0]["call_id"], json!("call_1"));
+    assert_eq!(input_items[0]["output"], json!("visible text"));
+    assert_eq!(input_items[0]["is_error"], json!(true));
+    assert!(input_items[0].get("output_parts").is_none());
+    assert_eq!(input_items[1]["type"], json!("message"));
+    assert_eq!(input_items[1]["role"], json!("user"));
+    assert_eq!(input_items[1]["content"][0]["type"], json!("input_image"));
+    assert_eq!(
+        input_items[1]["content"][0]["image_url"],
+        json!("data:image/png;base64,iVBORw0KGgo=")
+    );
+    assert_eq!(input_items[1]["content"][1]["type"], json!("input_file"));
+    assert_eq!(
+        input_items[1]["content"][1]["file_url"],
+        json!("data:application/pdf;base64,JVBERi0xLjQK")
+    );
+}
+
+#[test]
+fn anthropic_request_to_responses_normalizes_tool_schema_defaults() {
+    let http_clients = ProxyHttpClients::new().expect("http clients");
+
+    let input = bytes_from_json(json!({
+        "model": "claude-3-5-sonnet",
+        "tools": [
+            { "name": "empty_schema" },
+            { "name": "object_schema", "input_schema": { "type": "object" } }
+        ],
+        "messages": [
+            { "role": "user", "content": "hi" }
+        ]
+    }));
+
+    let output = run_async(async {
+        anthropic_request_to_responses(&input, &http_clients)
+            .await
+            .expect("transform")
+    });
+    let value = json_from_bytes(output);
+
+    assert_eq!(value["tools"][0]["parameters"]["type"], json!("object"));
+    assert_eq!(value["tools"][0]["parameters"]["properties"], json!({}));
+    assert_eq!(value["tools"][0]["strict"], json!(false));
+    assert_eq!(value["tools"][1]["parameters"]["type"], json!("object"));
+    assert_eq!(value["tools"][1]["parameters"]["properties"], json!({}));
+    assert_eq!(value["tools"][1]["strict"], json!(false));
 }
 
 #[test]

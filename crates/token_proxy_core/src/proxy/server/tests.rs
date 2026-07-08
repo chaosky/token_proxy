@@ -7367,8 +7367,13 @@ fn anthropic_count_tokens_request_bridges_to_responses_input_tokens_upstream() {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].path, "/v1/responses/input_tokens");
         assert_eq!(requests[0].body["model"], json!("gpt-5.4"));
-        assert_eq!(requests[0].body["instructions"], json!("count only"));
-        assert_eq!(requests[0].body["input"][0]["role"], json!("user"));
+        assert!(requests[0].body.get("instructions").is_none());
+        assert_eq!(requests[0].body["input"][0]["role"], json!("developer"));
+        assert_eq!(
+            requests[0].body["input"][0]["content"][0]["text"],
+            json!("count only")
+        );
+        assert_eq!(requests[0].body["input"][1]["role"], json!("user"));
         assert!(requests[0].body.get("stream").is_none());
         assert!(requests[0].body.get("temperature").is_none());
     });
