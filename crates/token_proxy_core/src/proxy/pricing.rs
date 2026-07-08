@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::fmt::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const DEFAULT_PRICING_VERSION: &str = "2026-07-05.fable-5";
+pub const DEFAULT_PRICING_VERSION: &str = "2026-07-08.gpt-5.6";
 // Multiplier is stored as a fixed-point decimal: 1_000_000_000_000 = 1x.
 pub const PRICE_MULTIPLIER_SCALE: u64 = 1_000_000_000_000;
 
@@ -84,6 +84,61 @@ pub fn default_model_pricing_settings() -> ModelPricingSettings {
         version: DEFAULT_PRICING_VERSION.to_string(),
         models: vec![
             // Default ids stay providerless; aliases keep common provider and spelling variants visible.
+            // GPT-5.6 Sol/Terra/Luna share the sub2api v0.1.146 GPT-5.6 pricing tiers.
+            ModelPricingModel {
+                model_id: "gpt-5.6-sol".to_string(),
+                aliases: alias_list(&["openai/gpt-5.6-sol"]),
+                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
+                short: ModelPricingTier {
+                    input_nano_usd_per_token: 5_000,
+                    cached_input_nano_usd_per_token: 500,
+                    output_nano_usd_per_token: 30_000,
+                },
+                long: Some(ModelPricingTier {
+                    input_nano_usd_per_token: 10_000,
+                    cached_input_nano_usd_per_token: 1_000,
+                    output_nano_usd_per_token: 45_000,
+                }),
+                long_context_input_token_threshold: Some(
+                    DEFAULT_LONG_CONTEXT_INPUT_TOKEN_THRESHOLD,
+                ),
+            },
+            ModelPricingModel {
+                model_id: "gpt-5.6-terra".to_string(),
+                aliases: alias_list(&["openai/gpt-5.6-terra"]),
+                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
+                short: ModelPricingTier {
+                    input_nano_usd_per_token: 5_000,
+                    cached_input_nano_usd_per_token: 500,
+                    output_nano_usd_per_token: 30_000,
+                },
+                long: Some(ModelPricingTier {
+                    input_nano_usd_per_token: 10_000,
+                    cached_input_nano_usd_per_token: 1_000,
+                    output_nano_usd_per_token: 45_000,
+                }),
+                long_context_input_token_threshold: Some(
+                    DEFAULT_LONG_CONTEXT_INPUT_TOKEN_THRESHOLD,
+                ),
+            },
+            ModelPricingModel {
+                model_id: "gpt-5.6-luna".to_string(),
+                aliases: alias_list(&["openai/gpt-5.6-luna"]),
+                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
+                short: ModelPricingTier {
+                    input_nano_usd_per_token: 5_000,
+                    cached_input_nano_usd_per_token: 500,
+                    output_nano_usd_per_token: 30_000,
+                },
+                long: Some(ModelPricingTier {
+                    input_nano_usd_per_token: 10_000,
+                    cached_input_nano_usd_per_token: 1_000,
+                    output_nano_usd_per_token: 45_000,
+                }),
+                long_context_input_token_threshold: Some(
+                    DEFAULT_LONG_CONTEXT_INPUT_TOKEN_THRESHOLD,
+                ),
+            },
             ModelPricingModel {
                 model_id: "gpt-5.5-pro".to_string(),
                 aliases: alias_list(&["openai/gpt-5.5-pro"]),
@@ -840,6 +895,21 @@ mod tests {
     #[test]
     fn calculates_short_context_request_cost() {
         let settings = default_model_pricing_settings();
+        let gpt_5_6_cost = calculate_request_cost(
+            &settings,
+            Some("openai/gpt-5.6-sol"),
+            None,
+            Some(200_000),
+            Some(10_000),
+            Some(20_000),
+        )
+        .expect("gpt-5.6 cost");
+
+        assert_eq!(gpt_5_6_cost.cost_nano_usd, 1_210_000_000);
+        assert_eq!(gpt_5_6_cost.pricing_version, DEFAULT_PRICING_VERSION);
+        assert_eq!(gpt_5_6_cost.pricing_model, "gpt-5.6-sol");
+        assert_eq!(gpt_5_6_cost.context_tier, PricingContextTier::Short);
+
         let cost = calculate_request_cost(
             &settings,
             Some("openai/gpt-5.5"),
@@ -890,6 +960,9 @@ mod tests {
             ("deepseek/deepseek-v4-pro", "deepseek-v4-pro"),
             ("moonshotai/kimi-k2.6", "kimi-k2.6"),
             ("z-ai/glm-5.2", "glm-5.2"),
+            ("openai/gpt-5.6-sol", "gpt-5.6-sol"),
+            ("openai/gpt-5.6-terra", "gpt-5.6-terra"),
+            ("openai/gpt-5.6-luna", "gpt-5.6-luna"),
             ("openai/gpt-5.5-pro", "gpt-5.5-pro"),
             ("openai/gpt-5.5", "gpt-5.5"),
             ("gpt-5.5-latest", "gpt-5.5"),
@@ -933,6 +1006,20 @@ mod tests {
     #[test]
     fn calculates_long_context_request_cost_from_mapped_model() {
         let settings = default_model_pricing_settings();
+        let gpt_5_6_cost = calculate_request_cost(
+            &settings,
+            Some("alias"),
+            Some("gpt-5.6-luna"),
+            Some(1_000_000),
+            Some(10_000),
+            Some(200_000),
+        )
+        .expect("gpt-5.6 long cost");
+
+        assert_eq!(gpt_5_6_cost.cost_nano_usd, 8_650_000_000);
+        assert_eq!(gpt_5_6_cost.pricing_model, "gpt-5.6-luna");
+        assert_eq!(gpt_5_6_cost.context_tier, PricingContextTier::Long);
+
         let cost = calculate_request_cost(
             &settings,
             Some("alias"),

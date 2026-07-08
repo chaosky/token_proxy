@@ -602,6 +602,15 @@ fn normalize_codex_model(model: &str) -> String {
         }
     }
 
+    if compact.contains("gpt-5.6-sol") {
+        return "gpt-5.6-sol".to_string();
+    }
+    if compact.contains("gpt-5.6-terra") {
+        return "gpt-5.6-terra".to_string();
+    }
+    if compact.contains("gpt-5.6-luna") {
+        return "gpt-5.6-luna".to_string();
+    }
     if compact.contains("gpt-5.5-pro") || compact.contains("gpt5.5-pro") {
         return "gpt-5.5-pro".to_string();
     }
@@ -688,6 +697,24 @@ fn value_contains_image_generation_tool(value: Option<&Value>) -> bool {
 }
 
 const CODEX_MODEL_ALIASES: &[(&str, &str)] = &[
+    ("gpt-5.6-sol", "gpt-5.6-sol"),
+    ("gpt-5.6-sol-none", "gpt-5.6-sol"),
+    ("gpt-5.6-sol-low", "gpt-5.6-sol"),
+    ("gpt-5.6-sol-medium", "gpt-5.6-sol"),
+    ("gpt-5.6-sol-high", "gpt-5.6-sol"),
+    ("gpt-5.6-sol-xhigh", "gpt-5.6-sol"),
+    ("gpt-5.6-terra", "gpt-5.6-terra"),
+    ("gpt-5.6-terra-none", "gpt-5.6-terra"),
+    ("gpt-5.6-terra-low", "gpt-5.6-terra"),
+    ("gpt-5.6-terra-medium", "gpt-5.6-terra"),
+    ("gpt-5.6-terra-high", "gpt-5.6-terra"),
+    ("gpt-5.6-terra-xhigh", "gpt-5.6-terra"),
+    ("gpt-5.6-luna", "gpt-5.6-luna"),
+    ("gpt-5.6-luna-none", "gpt-5.6-luna"),
+    ("gpt-5.6-luna-low", "gpt-5.6-luna"),
+    ("gpt-5.6-luna-medium", "gpt-5.6-luna"),
+    ("gpt-5.6-luna-high", "gpt-5.6-luna"),
+    ("gpt-5.6-luna-xhigh", "gpt-5.6-luna"),
     ("gpt-5.5-pro", "gpt-5.5-pro"),
     ("gpt-5.5-pro-none", "gpt-5.5-pro"),
     ("gpt-5.5-pro-low", "gpt-5.5-pro"),

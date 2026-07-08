@@ -5,6 +5,18 @@ fn default_hot_model_mappings_include_popular_namespaced_aliases() {
     let mappings = default_hot_model_mappings();
 
     assert_eq!(
+        mappings.get("openai/gpt-5.6-sol"),
+        Some(&"gpt-5.6-sol".to_string())
+    );
+    assert_eq!(
+        mappings.get("openai/gpt-5.6-terra"),
+        Some(&"gpt-5.6-terra".to_string())
+    );
+    assert_eq!(
+        mappings.get("openai/gpt-5.6-luna"),
+        Some(&"gpt-5.6-luna".to_string())
+    );
+    assert_eq!(
         mappings.get("openai/gpt-5.5-pro"),
         Some(&"gpt-5.5-pro".to_string())
     );

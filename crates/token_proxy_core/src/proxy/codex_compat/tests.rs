@@ -171,9 +171,37 @@ fn responses_request_to_codex_preserves_gpt_5_5_pro_model() {
 }
 
 #[test]
-fn supported_codex_models_include_gpt_5_5_pro() {
+fn responses_request_to_codex_preserves_gpt_5_6_models() {
+    let cases = [
+        ("openai/gpt-5.6-sol", "gpt-5.6-sol"),
+        ("gpt-5.6-terra-high", "gpt-5.6-terra"),
+        ("gpt-5.6-luna-xhigh", "gpt-5.6-luna"),
+    ];
+
+    for (incoming_model, expected_model) in cases {
+        let input = json!({
+            "model": incoming_model,
+            "input": "hi"
+        });
+
+        let output = responses_request_to_codex(&Bytes::from(input.to_string()), None)
+            .expect("convert responses request");
+        let value: serde_json::Value = serde_json::from_slice(&output).expect("json");
+
+        assert_eq!(value["model"], expected_model, "model={incoming_model}");
+    }
+}
+
+#[test]
+fn supported_codex_models_include_current_codex_families() {
     let models = supported_codex_model_ids();
 
+    assert!(models.contains(&"gpt-5.6-sol".to_string()));
+    assert!(models.contains(&"gpt-5.6-sol-high".to_string()));
+    assert!(models.contains(&"gpt-5.6-terra".to_string()));
+    assert!(models.contains(&"gpt-5.6-terra-high".to_string()));
+    assert!(models.contains(&"gpt-5.6-luna".to_string()));
+    assert!(models.contains(&"gpt-5.6-luna-xhigh".to_string()));
     assert!(models.contains(&"gpt-5.5-pro".to_string()));
     assert!(models.contains(&"gpt-5.5-pro-high".to_string()));
 }

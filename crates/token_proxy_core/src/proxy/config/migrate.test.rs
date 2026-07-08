@@ -172,6 +172,10 @@ fn migrate_adds_default_hot_model_mappings_when_missing() {
     assert!(changed);
 
     assert_eq!(
+        value["hot_model_mappings"]["openai/gpt-5.6-sol"].as_str(),
+        Some("gpt-5.6-sol")
+    );
+    assert_eq!(
         value["hot_model_mappings"]["openai/gpt-5.5"].as_str(),
         Some("gpt-5.5")
     );

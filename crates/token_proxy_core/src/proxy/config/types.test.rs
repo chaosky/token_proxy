@@ -83,6 +83,10 @@ fn hot_model_aliases_normalize_popular_provider_namespaces() {
     let upstream = hot_model_test_upstream(rules);
 
     assert_eq!(
+        upstream.map_model("openai/gpt-5.6-terra").as_deref(),
+        Some("gpt-5.6-terra")
+    );
+    assert_eq!(
         upstream.map_model("openai/gpt-5.5").as_deref(),
         Some("gpt-5.5")
     );
