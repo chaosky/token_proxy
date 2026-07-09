@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::fmt::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const DEFAULT_PRICING_VERSION: &str = "2026-07-08.gpt-5.6";
+pub const DEFAULT_PRICING_VERSION: &str = "2026-07-09.grok";
 // Multiplier is stored as a fixed-point decimal: 1_000_000_000_000 = 1x.
 pub const PRICE_MULTIPLIER_SCALE: u64 = 1_000_000_000_000;
 
@@ -387,6 +387,114 @@ pub fn default_model_pricing_settings() -> ModelPricingSettings {
                     input_nano_usd_per_token: 1_400,
                     cached_input_nano_usd_per_token: 260,
                     output_nano_usd_per_token: 4_400,
+                },
+                long: None,
+                long_context_input_token_threshold: None,
+            },
+            // xAI / OpenRouter (2026-07): grok-4.5 $2 / $0.50 cached / $6 per 1M tokens.
+            // grok-4.5-high is a reasoning-effort alias with the same list price.
+            ModelPricingModel {
+                model_id: "grok-4.5".to_string(),
+                aliases: alias_list(&[
+                    "grok-4.5-high",
+                    "x-ai/grok-4.5",
+                    "xai/grok-4.5",
+                    "x-ai/grok-4.5-high",
+                    "xai/grok-4.5-high",
+                ]),
+                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
+                short: ModelPricingTier {
+                    input_nano_usd_per_token: 2_000,
+                    cached_input_nano_usd_per_token: 500,
+                    output_nano_usd_per_token: 6_000,
+                },
+                long: None,
+                long_context_input_token_threshold: None,
+            },
+            // xAI / OpenRouter: grok-4.3 $1.25 / $0.20 cached / $2.50 per 1M tokens.
+            ModelPricingModel {
+                model_id: "grok-4.3".to_string(),
+                aliases: alias_list(&["x-ai/grok-4.3", "xai/grok-4.3"]),
+                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
+                short: ModelPricingTier {
+                    input_nano_usd_per_token: 1_250,
+                    cached_input_nano_usd_per_token: 200,
+                    output_nano_usd_per_token: 2_500,
+                },
+                long: None,
+                long_context_input_token_threshold: None,
+            },
+            // xAI Chat API lists grok-4.20-0309-reasoning / non-reasoning; OpenRouter uses grok-4.20.
+            // Same tier: $1.25 / $0.20 cached / $2.50 per 1M tokens.
+            ModelPricingModel {
+                model_id: "grok-4.20".to_string(),
+                aliases: alias_list(&[
+                    "grok-4.20-0309",
+                    "grok-4.20-0309-reasoning",
+                    "grok-4.20-0309-non-reasoning",
+                    "x-ai/grok-4.20",
+                    "xai/grok-4.20",
+                    "x-ai/grok-4.20-0309",
+                    "xai/grok-4.20-0309",
+                    "x-ai/grok-4.20-0309-reasoning",
+                    "xai/grok-4.20-0309-reasoning",
+                    "x-ai/grok-4.20-0309-non-reasoning",
+                    "xai/grok-4.20-0309-non-reasoning",
+                ]),
+                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
+                short: ModelPricingTier {
+                    input_nano_usd_per_token: 1_250,
+                    cached_input_nano_usd_per_token: 200,
+                    output_nano_usd_per_token: 2_500,
+                },
+                long: None,
+                long_context_input_token_threshold: None,
+            },
+            // xAI lists grok-4.20-multi-agent-0309; OpenRouter uses grok-4.20-multi-agent.
+            // Same tier: $1.25 / $0.20 cached / $2.50 per 1M tokens.
+            ModelPricingModel {
+                model_id: "grok-4.20-multi-agent".to_string(),
+                aliases: alias_list(&[
+                    "grok-4.20-multi-agent-0309",
+                    "x-ai/grok-4.20-multi-agent",
+                    "xai/grok-4.20-multi-agent",
+                    "x-ai/grok-4.20-multi-agent-0309",
+                    "xai/grok-4.20-multi-agent-0309",
+                ]),
+                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
+                short: ModelPricingTier {
+                    input_nano_usd_per_token: 1_250,
+                    cached_input_nano_usd_per_token: 200,
+                    output_nano_usd_per_token: 2_500,
+                },
+                long: None,
+                long_context_input_token_threshold: None,
+            },
+            // xAI Code API / OpenRouter: grok-build-0.1 $1 / $0.20 cached / $2 per 1M tokens.
+            ModelPricingModel {
+                model_id: "grok-build-0.1".to_string(),
+                aliases: alias_list(&["x-ai/grok-build-0.1", "xai/grok-build-0.1"]),
+                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
+                short: ModelPricingTier {
+                    input_nano_usd_per_token: 1_000,
+                    cached_input_nano_usd_per_token: 200,
+                    output_nano_usd_per_token: 2_000,
+                },
+                long: None,
+                long_context_input_token_threshold: None,
+            },
+            // Composer 2.5 Fast is the Grok Build coding surface; same list price as grok-build-0.1.
+            ModelPricingModel {
+                model_id: "grok-composer-2.5-fast".to_string(),
+                aliases: alias_list(&[
+                    "x-ai/grok-composer-2.5-fast",
+                    "xai/grok-composer-2.5-fast",
+                ]),
+                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
+                short: ModelPricingTier {
+                    input_nano_usd_per_token: 1_000,
+                    cached_input_nano_usd_per_token: 200,
+                    output_nano_usd_per_token: 2_000,
                 },
                 long: None,
                 long_context_input_token_threshold: None,
@@ -971,6 +1079,21 @@ mod tests {
             ("openai/gpt-image-2", "gpt-image-2"),
             ("gpt-image-2-2026-04-21", "gpt-image-2"),
             ("openai/gpt-image-2-2026-04-21", "gpt-image-2"),
+            ("x-ai/grok-4.5", "grok-4.5"),
+            ("grok-4.5-high", "grok-4.5"),
+            ("x-ai/grok-4.5-high", "grok-4.5"),
+            ("x-ai/grok-4.3", "grok-4.3"),
+            ("x-ai/grok-4.20", "grok-4.20"),
+            ("grok-4.20-0309-reasoning", "grok-4.20"),
+            ("grok-4.20-0309-non-reasoning", "grok-4.20"),
+            ("x-ai/grok-4.20-multi-agent", "grok-4.20-multi-agent"),
+            ("grok-4.20-multi-agent-0309", "grok-4.20-multi-agent"),
+            (
+                "x-ai/grok-4.20-multi-agent-0309",
+                "grok-4.20-multi-agent",
+            ),
+            ("x-ai/grok-build-0.1", "grok-build-0.1"),
+            ("x-ai/grok-composer-2.5-fast", "grok-composer-2.5-fast"),
         ];
 
         for (incoming_model, expected_pricing_model) in cases {
@@ -1286,6 +1409,74 @@ mod tests {
         assert_eq!(gpt_5_2_codex.short.cached_input_nano_usd_per_token, 175);
         assert_eq!(gpt_5_2_codex.short.output_nano_usd_per_token, 14_000);
         assert_eq!(gpt_5_2_codex.aliases, vec!["openai/gpt-5.2-codex"]);
+
+        let grok_4_5 = settings
+            .models
+            .iter()
+            .find(|model| model.model_id == "grok-4.5")
+            .expect("grok-4.5 should exist");
+        assert_eq!(grok_4_5.short.input_nano_usd_per_token, 2_000);
+        assert_eq!(grok_4_5.short.cached_input_nano_usd_per_token, 500);
+        assert_eq!(grok_4_5.short.output_nano_usd_per_token, 6_000);
+        assert!(grok_4_5.aliases.iter().any(|alias| alias == "grok-4.5-high"));
+        assert!(grok_4_5.aliases.iter().any(|alias| alias == "x-ai/grok-4.5"));
+
+        let grok_4_3 = settings
+            .models
+            .iter()
+            .find(|model| model.model_id == "grok-4.3")
+            .expect("grok-4.3 should exist");
+        assert_eq!(grok_4_3.short.input_nano_usd_per_token, 1_250);
+        assert_eq!(grok_4_3.short.cached_input_nano_usd_per_token, 200);
+        assert_eq!(grok_4_3.short.output_nano_usd_per_token, 2_500);
+
+        let grok_4_20 = settings
+            .models
+            .iter()
+            .find(|model| model.model_id == "grok-4.20")
+            .expect("grok-4.20 should exist");
+        assert_eq!(grok_4_20.short.input_nano_usd_per_token, 1_250);
+        assert_eq!(grok_4_20.short.cached_input_nano_usd_per_token, 200);
+        assert_eq!(grok_4_20.short.output_nano_usd_per_token, 2_500);
+        assert!(grok_4_20
+            .aliases
+            .iter()
+            .any(|alias| alias == "grok-4.20-0309-reasoning"));
+        assert!(grok_4_20
+            .aliases
+            .iter()
+            .any(|alias| alias == "x-ai/grok-4.20"));
+
+        let grok_multi_agent = settings
+            .models
+            .iter()
+            .find(|model| model.model_id == "grok-4.20-multi-agent")
+            .expect("grok-4.20-multi-agent should exist");
+        assert_eq!(grok_multi_agent.short.input_nano_usd_per_token, 1_250);
+        assert_eq!(grok_multi_agent.short.cached_input_nano_usd_per_token, 200);
+        assert_eq!(grok_multi_agent.short.output_nano_usd_per_token, 2_500);
+        assert!(grok_multi_agent
+            .aliases
+            .iter()
+            .any(|alias| alias == "grok-4.20-multi-agent-0309"));
+
+        let grok_build = settings
+            .models
+            .iter()
+            .find(|model| model.model_id == "grok-build-0.1")
+            .expect("grok-build-0.1 should exist");
+        assert_eq!(grok_build.short.input_nano_usd_per_token, 1_000);
+        assert_eq!(grok_build.short.cached_input_nano_usd_per_token, 200);
+        assert_eq!(grok_build.short.output_nano_usd_per_token, 2_000);
+
+        let grok_composer = settings
+            .models
+            .iter()
+            .find(|model| model.model_id == "grok-composer-2.5-fast")
+            .expect("grok-composer-2.5-fast should exist");
+        assert_eq!(grok_composer.short.input_nano_usd_per_token, 1_000);
+        assert_eq!(grok_composer.short.cached_input_nano_usd_per_token, 200);
+        assert_eq!(grok_composer.short.output_nano_usd_per_token, 2_000);
 
         let glm_5_2 = settings
             .models
