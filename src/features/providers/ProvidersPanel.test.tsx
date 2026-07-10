@@ -744,7 +744,9 @@ describe("providers/ProvidersPanel", () => {
     if (!(invalidSummaryButton instanceof HTMLButtonElement)) {
       throw new Error("Missing invalid status summary button");
     }
-    expect(invalidSummaryButton).toHaveTextContent(`${m.codex_account_status_invalid()}1`);
+    await waitFor(() => {
+      expect(invalidSummaryButton).toHaveTextContent(`${m.codex_account_status_invalid()}1`);
+    });
 
     await user.click(invalidSummaryButton);
 
