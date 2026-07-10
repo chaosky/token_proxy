@@ -31,3 +31,7 @@ toml_edit = "0.25"
 tracing = { version = "0.1.44", features = ["release_max_level_off"] }
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 url = "2.5.8"
+
+[dev-dependencies]
+h2 = "0.4"
+httparse = "1"

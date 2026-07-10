@@ -20,6 +20,7 @@ mod request_body;
 mod result;
 mod retry;
 mod transport;
+mod transport_error;
 mod utils;
 
 use dispatch::run_upstream_groups;

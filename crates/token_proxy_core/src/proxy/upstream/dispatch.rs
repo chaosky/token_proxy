@@ -557,7 +557,7 @@ async fn retry_same_upstream_once(
         upstream = %upstream.id,
         "retrying same upstream once before upstream failover"
     );
-    attempt::attempt_upstream(
+    let outcome = attempt::attempt_upstream(
         state,
         method.clone(),
         provider,
@@ -573,7 +573,20 @@ async fn retry_same_upstream_once(
         request_detail.clone(),
         cooldown_scope,
     )
-    .await
+    .await;
+    let retry_result = match &outcome {
+        AttemptOutcome::Success(_) => "success",
+        AttemptOutcome::Retryable { .. } => "retryable_failure",
+        AttemptOutcome::Fatal(_) => "fatal_failure",
+        AttemptOutcome::SkippedAuth => "skipped_auth",
+    };
+    tracing::info!(
+        provider,
+        upstream = %upstream.id,
+        retry_result,
+        "same upstream retry completed"
+    );
+    outcome
 }
 
 fn launch_group_attempts<'a>(

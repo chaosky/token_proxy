@@ -7,7 +7,7 @@ use tokio::time::timeout;
 use super::request_body;
 use super::result;
 use super::retry::mark_account_retryable_failure;
-use super::utils::{is_retryable_error, sanitize_upstream_error};
+use super::transport_error::{analyze_transport_error, TransportRecovery};
 use super::AttemptOutcome;
 use crate::proxy::cooldown_scope::CooldownScope;
 use crate::proxy::http;
@@ -189,6 +189,7 @@ async fn send_upstream_request_once(
             err,
             start_time,
             cooldown_scope,
+            TransportRecovery::SameUpstreamOnce,
         )),
         Err(SendFailure::Timeout) => Err(handle_upstream_timeout(
             state,
@@ -201,6 +202,7 @@ async fn send_upstream_request_once(
             start_time,
             response_header_timeout,
             cooldown_scope,
+            TransportRecovery::SameUpstreamOnce,
         )),
     }
 }
@@ -224,10 +226,11 @@ async fn send_codex_with_fallback(
     proxy_url: Option<&str>,
     cooldown_scope: &CooldownScope,
 ) -> Result<reqwest::Response, AttemptOutcome> {
-    // Codex 代理回退：socks5h / http1_only，缓解 DNS/ALPN/TLS 兼容问题。
+    // Codex 代理失败只重放一次；第二次合并 socks5h 与 HTTP/1，避免同一 POST 第三次发送。
     let attempts = build_codex_send_attempts(proxy_url);
+    let attempt_count = attempts.len();
     let mut last_error: Option<reqwest::Error> = None;
-    for attempt in attempts {
+    for (attempt_index, attempt) in attempts.into_iter().enumerate() {
         match send_codex_attempt(
             state,
             &method,
@@ -250,7 +253,17 @@ async fn send_codex_with_fallback(
         .await
         {
             Ok(response) => return Ok(response),
-            Err(CodexAttemptError::Retry(err)) => last_error = Some(err),
+            Err(CodexAttemptError::Retry(err)) => {
+                if attempt_index + 1 < attempt_count {
+                    tracing::warn!(
+                        attempt = attempt_index + 1,
+                        attempt_count,
+                        http1_only = attempt.http1_only,
+                        "Codex request failed before headers; retrying with fallback transport"
+                    );
+                }
+                last_error = Some(err);
+            }
             Err(CodexAttemptError::Fatal(outcome)) => return Err(outcome),
         }
     }
@@ -338,6 +351,7 @@ async fn send_codex_attempt(
             start_time,
             response_header_timeout,
             cooldown_scope,
+            TransportRecovery::NextUpstream,
         ))),
         Err(SendFailure::Transport(err)) => {
             if should_retry_codex_send(&err) {
@@ -354,6 +368,7 @@ async fn send_codex_attempt(
                 err,
                 start_time,
                 cooldown_scope,
+                TransportRecovery::NextUpstream,
             )))
         }
     }
@@ -377,6 +392,7 @@ fn finalize_codex_fallback(
             "Codex upstream request failed.".to_string(),
         ));
     };
+    // Codex 已在本层穷尽 proxy 模式，外层还会处理账号与 upstream；禁止重新跑整条账号链。
     map_upstream_error(
         state,
         provider,
@@ -388,6 +404,7 @@ fn finalize_codex_fallback(
         err,
         start_time,
         cooldown_scope,
+        TransportRecovery::NextUpstream,
     )
 }
 
@@ -464,14 +481,8 @@ fn build_codex_send_attempts(proxy_url: Option<&str>) -> Vec<CodexSendAttempt> {
         proxy_url: Some(proxy_url.to_string()),
         http1_only: false,
     });
-    if let Some(upgraded) = upgrade_socks5(proxy_url) {
-        attempts.push(CodexSendAttempt {
-            proxy_url: Some(upgraded),
-            http1_only: false,
-        });
-    }
     attempts.push(CodexSendAttempt {
-        proxy_url: Some(proxy_url.to_string()),
+        proxy_url: Some(upgrade_socks5(proxy_url).unwrap_or_else(|| proxy_url.to_string())),
         http1_only: true,
     });
     attempts
@@ -503,11 +514,20 @@ fn handle_upstream_timeout(
     start_time: Instant,
     response_header_timeout: Option<Duration>,
     cooldown_scope: &CooldownScope,
+    request_recovery: TransportRecovery,
 ) -> AttemptOutcome {
     let timeout_secs = response_header_timeout
         .unwrap_or(state.config.sync_response_timeout)
         .as_secs();
     let message = format!("Upstream did not respond within {}s.", timeout_secs);
+    tracing::warn!(
+        provider,
+        upstream = %upstream.id,
+        recovery = request_recovery.as_str(),
+        status = StatusCode::GATEWAY_TIMEOUT.as_u16(),
+        timeout_secs,
+        "upstream request timed out before response headers"
+    );
     mark_account_retryable_failure(
         state,
         provider,
@@ -532,7 +552,7 @@ fn handle_upstream_timeout(
         response: None,
         is_timeout: true,
         should_cooldown: true,
-        retry_same_upstream_once: true,
+        retry_same_upstream_once: request_recovery == TransportRecovery::SameUpstreamOnce,
     }
 }
 
@@ -547,21 +567,23 @@ fn map_upstream_error(
     err: reqwest::Error,
     start_time: Instant,
     cooldown_scope: &CooldownScope,
+    request_recovery: TransportRecovery,
 ) -> AttemptOutcome {
-    let message = sanitize_upstream_error(provider, &err);
-    if is_retryable_error(&err) {
-        let status = if err.is_timeout() {
-            StatusCode::GATEWAY_TIMEOUT
-        } else {
-            StatusCode::BAD_GATEWAY
-        };
-        mark_account_retryable_failure(
-            state,
-            provider,
-            selected_account_id,
-            Some(message.clone()),
-            cooldown_scope,
-        );
+    let failure = analyze_transport_error(provider, err, request_recovery);
+    tracing::warn!(
+        provider,
+        upstream = %upstream.id,
+        transport_class = failure.class.as_str(),
+        recovery = failure.recovery.as_str(),
+        status = failure.status.as_u16(),
+        is_timeout = failure.is_timeout,
+        diagnostic = %failure.diagnostic_message,
+        "upstream request failed before response headers"
+    );
+
+    if failure.recovery == TransportRecovery::Fatal {
+        let client_message = format!("Upstream request failed: {}", failure.client_message);
+        let diagnostic_message = format!("Upstream request failed: {}", failure.diagnostic_message);
         result::log_upstream_error_if_needed(
             &state.log,
             request_detail,
@@ -570,19 +592,20 @@ fn map_upstream_error(
             &upstream.id,
             selected_account_id,
             inbound_path,
-            status,
-            message.clone(),
+            failure.status,
+            diagnostic_message,
             start_time,
         );
-        return AttemptOutcome::Retryable {
-            message,
-            response: None,
-            is_timeout: err.is_timeout(),
-            should_cooldown: true,
-            retry_same_upstream_once: false,
-        };
+        return AttemptOutcome::Fatal(http::error_response(failure.status, client_message));
     }
-    let error_message = format!("Upstream request failed: {message}");
+
+    mark_account_retryable_failure(
+        state,
+        provider,
+        selected_account_id,
+        Some(failure.client_message.clone()),
+        cooldown_scope,
+    );
     result::log_upstream_error_if_needed(
         &state.log,
         request_detail,
@@ -591,11 +614,17 @@ fn map_upstream_error(
         &upstream.id,
         selected_account_id,
         inbound_path,
-        StatusCode::BAD_GATEWAY,
-        error_message.clone(),
+        failure.status,
+        failure.diagnostic_message,
         start_time,
     );
-    AttemptOutcome::Fatal(http::error_response(StatusCode::BAD_GATEWAY, error_message))
+    AttemptOutcome::Retryable {
+        message: failure.client_message,
+        response: None,
+        is_timeout: failure.is_timeout,
+        should_cooldown: true,
+        retry_same_upstream_once: failure.recovery == TransportRecovery::SameUpstreamOnce,
+    }
 }
 
 #[cfg(test)]
@@ -647,5 +676,25 @@ mod tests {
             response_header_timeout_for_request(&config, &meta),
             Some(Duration::from_secs(120))
         );
+    }
+
+    #[test]
+    fn codex_proxy_attempts_allow_at_most_one_replay() {
+        let direct = build_codex_send_attempts(None);
+        let http = build_codex_send_attempts(Some("http://127.0.0.1:8080"));
+        let socks5 = build_codex_send_attempts(Some("socks5://127.0.0.1:1080"));
+        let socks5h = build_codex_send_attempts(Some("socks5h://127.0.0.1:1080"));
+
+        assert_eq!(direct.len(), 1);
+        assert_eq!(http.len(), 2);
+        assert_eq!(socks5.len(), 2);
+        assert_eq!(socks5h.len(), 2);
+        assert_eq!(
+            socks5[1].proxy_url.as_deref(),
+            Some("socks5h://127.0.0.1:1080")
+        );
+        assert!(http[1].http1_only);
+        assert!(socks5[1].http1_only);
+        assert!(socks5h[1].http1_only);
     }
 }

@@ -11,17 +11,19 @@ use axum::{
 use serde_json::{json, Value};
 use sqlx::Row;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     net::SocketAddr,
     path::PathBuf,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 use time::{Duration as TimeDuration, OffsetDateTime};
-use tokio::{io::AsyncReadExt, runtime::Runtime, sync::RwLock, task::JoinHandle};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    runtime::Runtime,
+    sync::RwLock,
+    task::JoinHandle,
+};
 
 use crate::logging::LogLevel;
 use crate::paths::TokenProxyPaths;
@@ -261,15 +263,40 @@ impl MockUpstream {
     }
 }
 
-struct DisconnectBeforeHeadersUpstream {
+#[derive(Clone)]
+enum ScriptedConnectionAction {
+    DisconnectBeforeHeaders,
+    Respond {
+        status: StatusCode,
+        content_type: &'static str,
+        body: Bytes,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RecordedWireRequest {
+    connection_index: usize,
+    method: String,
+    target: String,
+    headers: BTreeMap<String, Vec<String>>,
+    body: Bytes,
+}
+
+struct ScriptedTcpUpstream {
     base_url: String,
-    connections: Arc<AtomicUsize>,
+    requests: Arc<Mutex<Vec<RecordedWireRequest>>>,
     task: JoinHandle<()>,
 }
 
-impl DisconnectBeforeHeadersUpstream {
+impl ScriptedTcpUpstream {
     fn connections(&self) -> usize {
-        self.connections.load(Ordering::Relaxed)
+        self.requests.lock().expect("wire requests lock").len()
+    }
+
+    fn requests(&self) -> Vec<RecordedWireRequest> {
+        let mut requests = self.requests.lock().expect("wire requests lock").clone();
+        requests.sort_by_key(|request| request.connection_index);
+        requests
     }
 
     fn abort(self) {
@@ -367,33 +394,171 @@ async fn spawn_mock_upstream(status: StatusCode, body: Value) -> MockUpstream {
     spawn_mock_upstream_with_delay(status, body, 0).await
 }
 
-async fn spawn_disconnect_before_headers_upstream() -> DisconnectBeforeHeadersUpstream {
+const MAX_SCRIPTED_REQUEST_BYTES: usize = 256 * 1024;
+
+async fn read_scripted_wire_request(
+    stream: &mut tokio::net::TcpStream,
+    connection_index: usize,
+) -> RecordedWireRequest {
+    // 该夹具只服务小型 Content-Length HTTP/1 请求，不承担通用 HTTP server 职责。
+    let mut buffer = Vec::new();
+    loop {
+        if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+        let mut chunk = [0_u8; 4096];
+        let read = stream
+            .read(&mut chunk)
+            .await
+            .expect("read scripted request headers");
+        assert!(
+            read > 0,
+            "connection closed before request headers completed"
+        );
+        buffer.extend_from_slice(&chunk[..read]);
+        assert!(
+            buffer.len() <= MAX_SCRIPTED_REQUEST_BYTES,
+            "scripted request headers exceeded test limit"
+        );
+    }
+
+    // 使用 HTTP parser 读取完整 request，确保断开发生在 body 已发送、响应头未返回的阶段。
+    let (header_len, method, target, mut headers, content_length) = {
+        let mut parsed_headers = [httparse::EMPTY_HEADER; 64];
+        let mut request = httparse::Request::new(&mut parsed_headers);
+        let header_len = match request
+            .parse(&buffer)
+            .expect("parse scripted HTTP/1 request")
+        {
+            httparse::Status::Complete(header_len) => header_len,
+            httparse::Status::Partial => panic!("scripted HTTP/1 request headers are partial"),
+        };
+        let method = request.method.expect("scripted request method").to_string();
+        let target = request.path.expect("scripted request target").to_string();
+        let content_length = request
+            .headers
+            .iter()
+            .find(|header| header.name.eq_ignore_ascii_case("content-length"))
+            .map(|header| {
+                std::str::from_utf8(header.value)
+                    .expect("content-length is UTF-8")
+                    .parse::<usize>()
+                    .expect("content-length is numeric")
+            })
+            .expect("scripted request must include content-length");
+        let mut headers = BTreeMap::<String, Vec<String>>::new();
+        for header in request.headers.iter() {
+            headers
+                .entry(header.name.to_ascii_lowercase())
+                .or_default()
+                .push(String::from_utf8_lossy(header.value).into_owned());
+        }
+        (header_len, method, target, headers, content_length)
+    };
+
+    let request_len = header_len + content_length;
+    while buffer.len() < request_len {
+        let mut chunk = [0_u8; 4096];
+        let read = stream
+            .read(&mut chunk)
+            .await
+            .expect("read scripted request body");
+        assert!(read > 0, "connection closed before request body completed");
+        buffer.extend_from_slice(&chunk[..read]);
+        assert!(
+            buffer.len() <= MAX_SCRIPTED_REQUEST_BYTES,
+            "scripted request exceeded test limit"
+        );
+    }
+    for values in headers.values_mut() {
+        values.sort();
+    }
+
+    RecordedWireRequest {
+        connection_index,
+        method,
+        target,
+        headers,
+        body: Bytes::copy_from_slice(&buffer[header_len..request_len]),
+    }
+}
+
+async fn write_scripted_response(
+    stream: &mut tokio::net::TcpStream,
+    status: StatusCode,
+    content_type: &str,
+    body: &Bytes,
+) {
+    let reason = status.canonical_reason().unwrap_or("Unknown");
+    let response_headers = format!(
+        "HTTP/1.1 {} {}\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        status.as_u16(),
+        reason,
+        content_type,
+        body.len()
+    );
+    stream
+        .write_all(response_headers.as_bytes())
+        .await
+        .expect("write scripted response headers");
+    stream
+        .write_all(body)
+        .await
+        .expect("write scripted response body");
+    stream.shutdown().await.expect("shutdown scripted response");
+}
+
+async fn spawn_scripted_tcp_upstream(
+    actions: Vec<ScriptedConnectionAction>,
+) -> ScriptedTcpUpstream {
+    assert!(!actions.is_empty(), "scripted upstream needs an action");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("bind disconnecting mock upstream");
-    let addr: SocketAddr = listener
-        .local_addr()
-        .expect("disconnecting mock local addr");
-    let connections = Arc::new(AtomicUsize::new(0));
-    let task_connections = connections.clone();
+        .expect("bind scripted TCP upstream");
+    let addr: SocketAddr = listener.local_addr().expect("scripted TCP local addr");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let task_requests = requests.clone();
     let task = tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else {
                 return;
             };
-            task_connections.fetch_add(1, Ordering::Relaxed);
-            tokio::spawn(async move {
-                // 先接收请求字节，再关闭连接，确保失败发生在响应头到达之前。
-                let mut buffer = [0_u8; 1024];
-                let _ = stream.read(&mut buffer).await;
-            });
+            let connection_index = task_requests.lock().expect("wire requests lock").len();
+            let request = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                read_scripted_wire_request(&mut stream, connection_index),
+            )
+            .await
+            .expect("scripted HTTP/1 request timed out");
+            task_requests
+                .lock()
+                .expect("wire requests lock")
+                .push(request);
+            let action = actions
+                .get(connection_index)
+                .cloned()
+                .unwrap_or(ScriptedConnectionAction::DisconnectBeforeHeaders);
+            match action {
+                ScriptedConnectionAction::DisconnectBeforeHeaders => {}
+                ScriptedConnectionAction::Respond {
+                    status,
+                    content_type,
+                    body,
+                } => {
+                    write_scripted_response(&mut stream, status, content_type, &body).await;
+                }
+            }
         }
     });
-    DisconnectBeforeHeadersUpstream {
+    ScriptedTcpUpstream {
         base_url: format!("http://{addr}"),
-        connections,
+        requests,
         task,
     }
+}
+
+async fn spawn_disconnect_before_headers_upstream() -> ScriptedTcpUpstream {
+    spawn_scripted_tcp_upstream(vec![ScriptedConnectionAction::DisconnectBeforeHeaders]).await
 }
 
 async fn spawn_mock_upstream_with_delay(
@@ -2104,6 +2269,440 @@ data: [DONE]\n\n",
     assert_eq!(fallback_requests[0].path, RESPONSES_PATH);
 }
 
+fn scripted_responses_sse(response_id: &str, text: &str) -> Bytes {
+    let delta = json!({
+        "type": "response.output_text.delta",
+        "delta": text
+    });
+    let completed = json!({
+        "type": "response.completed",
+        "response": {
+            "id": response_id,
+            "object": "response",
+            "created_at": 123,
+            "model": "gpt-5",
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "id": "msg_1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": text }]
+            }],
+            "usage": { "input_tokens": 1, "output_tokens": 2, "total_tokens": 3 }
+        }
+    });
+    Bytes::from(format!(
+        "data: {delta}\n\ndata: {completed}\n\ndata: [DONE]\n\n"
+    ))
+}
+
+async fn send_scripted_replay_probe(state: ProxyStateHandle) -> (StatusCode, String) {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-replay-probe",
+        HeaderValue::from_static("stable-replay-value"),
+    );
+    let response = proxy_request(
+        State(state),
+        Method::POST,
+        Uri::from_static("/v1/responses?probe=fresh-retry"),
+        headers,
+        Body::from(
+            json!({
+                "model": "gpt-5",
+                "stream": true,
+                "input": "verify fresh connection replay"
+            })
+            .to_string(),
+        ),
+    )
+    .await;
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("scripted replay response bytes");
+    (
+        status,
+        String::from_utf8(bytes.to_vec()).expect("scripted replay response text"),
+    )
+}
+
+fn assert_wire_request_replayed(requests: &[RecordedWireRequest]) {
+    assert_eq!(requests.len(), 2, "same upstream must receive two attempts");
+    let first = &requests[0];
+    let second = &requests[1];
+    assert_ne!(
+        first.connection_index, second.connection_index,
+        "fresh retry must use another TCP connection"
+    );
+    assert_eq!(first.method, "POST");
+    assert_eq!(first.method, second.method);
+    assert_eq!(first.target, "/v1/responses?probe=fresh-retry");
+    assert_eq!(first.target, second.target);
+    assert_eq!(first.headers, second.headers);
+    assert_eq!(
+        first.headers.get("x-replay-probe"),
+        Some(&vec!["stable-replay-value".to_string()])
+    );
+    assert_eq!(first.body, second.body);
+    let first_json: Value = serde_json::from_slice(&first.body).expect("first replay body JSON");
+    let second_json: Value = serde_json::from_slice(&second.body).expect("second replay body JSON");
+    assert_eq!(first_json, second_json);
+    assert_eq!(first_json["model"].as_str(), Some("gpt-5"));
+}
+
+async fn assert_disconnect_once_retries_same_upstream_before_fallback() {
+    let primary = spawn_scripted_tcp_upstream(vec![
+        ScriptedConnectionAction::DisconnectBeforeHeaders,
+        ScriptedConnectionAction::Respond {
+            status: StatusCode::OK,
+            content_type: "text/event-stream",
+            body: scripted_responses_sse("resp_fresh_recovered", "fresh connection recovered"),
+        },
+    ])
+    .await;
+    let fallback = spawn_mock_raw_upstream(
+        StatusCode::OK,
+        scripted_responses_sse("resp_fallback_not_expected", "fallback should not run"),
+        "text/event-stream",
+    )
+    .await;
+    let mut config = config_with_runtime_upstreams(&[
+        (
+            PROVIDER_RESPONSES,
+            10,
+            "responses-disconnect-once",
+            primary.base_url.as_str(),
+            FORMATS_RESPONSES,
+        ),
+        (
+            PROVIDER_RESPONSES,
+            5,
+            "responses-fallback-not-expected",
+            fallback.base_url.as_str(),
+            FORMATS_RESPONSES,
+        ),
+    ]);
+    config.upstream_strategy = UpstreamStrategyRuntime {
+        order: UpstreamOrderStrategy::FillFirst,
+        dispatch: UpstreamDispatchRuntime::Serial,
+    };
+    let data_dir = next_test_data_dir("responses_disconnect_once_fresh_retry");
+    let (state, pool) = build_test_state_handle_with_sqlite_log(config, data_dir.clone()).await;
+
+    let (status, response_text) = send_scripted_replay_probe(state).await;
+    let logged_count = wait_for_request_log_count(&pool, 2).await;
+    let transport_error = sqlx::query(
+        "SELECT response_error FROM request_logs WHERE status = 502 ORDER BY id ASC LIMIT 1;",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("query transport failure log")
+    .try_get::<Option<String>, _>("response_error")
+    .expect("transport response_error")
+    .expect("transport response_error value");
+    let primary_connections = primary.connections();
+    let primary_requests = primary.requests();
+    let fallback_requests = fallback.requests();
+
+    primary.abort();
+    fallback.abort();
+    pool.close().await;
+    let _ = std::fs::remove_dir_all(&data_dir);
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(response_text.contains("fresh connection recovered"));
+    assert!(!response_text.contains("fallback should not run"));
+    assert_eq!(primary_connections, 2);
+    assert_wire_request_replayed(&primary_requests);
+    assert!(fallback_requests.is_empty());
+    assert_eq!(logged_count, 2);
+    assert!(
+        transport_error.contains("class=request"),
+        "{transport_error}"
+    );
+    assert!(
+        transport_error.contains("recovery=same_upstream_once"),
+        "{transport_error}"
+    );
+    assert!(
+        transport_error.contains("connection closed before message completed"),
+        "{transport_error}"
+    );
+    assert!(
+        !transport_error.contains("fresh-retry"),
+        "{transport_error}"
+    );
+}
+
+async fn assert_disconnect_twice_falls_back_after_one_fresh_retry() {
+    let primary = spawn_scripted_tcp_upstream(vec![
+        ScriptedConnectionAction::DisconnectBeforeHeaders,
+        ScriptedConnectionAction::DisconnectBeforeHeaders,
+    ])
+    .await;
+    let fallback = spawn_mock_raw_upstream(
+        StatusCode::OK,
+        scripted_responses_sse(
+            "resp_after_fresh_exhausted",
+            "fallback after fresh exhausted",
+        ),
+        "text/event-stream",
+    )
+    .await;
+    let mut config = config_with_runtime_upstreams(&[
+        (
+            PROVIDER_RESPONSES,
+            10,
+            "responses-disconnect-twice",
+            primary.base_url.as_str(),
+            FORMATS_RESPONSES,
+        ),
+        (
+            PROVIDER_RESPONSES,
+            5,
+            "responses-fallback-after-fresh-exhausted",
+            fallback.base_url.as_str(),
+            FORMATS_RESPONSES,
+        ),
+    ]);
+    config.upstream_strategy = UpstreamStrategyRuntime {
+        order: UpstreamOrderStrategy::FillFirst,
+        dispatch: UpstreamDispatchRuntime::Serial,
+    };
+    let data_dir = next_test_data_dir("responses_disconnect_twice_fallback");
+    let state = build_test_state_handle(config, data_dir.clone()).await;
+
+    let (status, response_text) = send_scripted_replay_probe(state).await;
+    let primary_connections = primary.connections();
+    let primary_requests = primary.requests();
+    let fallback_requests = fallback.requests();
+
+    primary.abort();
+    fallback.abort();
+    let _ = std::fs::remove_dir_all(&data_dir);
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(response_text.contains("fallback after fresh exhausted"));
+    assert_eq!(primary_connections, 2);
+    assert_wire_request_replayed(&primary_requests);
+    assert_eq!(fallback_requests.len(), 1);
+    assert_eq!(fallback_requests[0].path, RESPONSES_PATH);
+    assert_eq!(fallback_requests[0].body["model"].as_str(), Some("gpt-5"));
+}
+
+async fn assert_codex_transport_disconnect_does_not_restart_account_chain(pinned: bool) {
+    let codex = spawn_disconnect_before_headers_upstream().await;
+    let fallback = spawn_mock_upstream(
+        StatusCode::OK,
+        json!({
+            "id": "resp_after_codex_transport_disconnect",
+            "object": "response",
+            "created_at": 123,
+            "model": "gpt-5",
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "id": "msg_1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": "responses fallback after codex disconnect"
+                }]
+            }],
+            "usage": { "input_tokens": 1, "output_tokens": 2, "total_tokens": 3 }
+        }),
+    )
+    .await;
+    let mut config = config_with_runtime_upstreams(&[
+        (
+            PROVIDER_CODEX,
+            10,
+            "codex-transport-primary",
+            codex.base_url.as_str(),
+            FORMATS_RESPONSES,
+        ),
+        (
+            PROVIDER_RESPONSES,
+            5,
+            "responses-after-codex-transport",
+            fallback.base_url.as_str(),
+            FORMATS_RESPONSES,
+        ),
+    ]);
+    if !pinned {
+        config
+            .upstreams
+            .get_mut(PROVIDER_CODEX)
+            .expect("codex upstreams")
+            .groups[0]
+            .items[0]
+            .codex_account_id = None;
+    }
+    let data_dir = next_test_data_dir(if pinned {
+        "responses_pinned_codex_transport_disconnect"
+    } else {
+        "responses_unpinned_codex_transport_disconnect"
+    });
+    let state = build_test_state_handle(config, data_dir.clone()).await;
+    if !pinned {
+        let expires_at = (OffsetDateTime::now_utc() + TimeDuration::days(1))
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("format expires_at");
+        seed_codex_account(
+            &state,
+            "codex-a.json",
+            "codex-access-a",
+            "chatgpt-a",
+            &expires_at,
+        )
+        .await;
+        seed_codex_account(
+            &state,
+            "codex-b.json",
+            "codex-access-b",
+            "chatgpt-b",
+            &expires_at,
+        )
+        .await;
+    }
+
+    let (status, response) = send_responses_request(state).await;
+    let codex_connections = codex.connections();
+    let fallback_requests = fallback.requests();
+
+    codex.abort();
+    fallback.abort();
+    let _ = std::fs::remove_dir_all(&data_dir);
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        response["output"][0]["content"][0]["text"].as_str(),
+        Some("responses fallback after codex disconnect")
+    );
+    assert_eq!(
+        codex_connections,
+        if pinned { 1 } else { 2 },
+        "Codex transport recovery must not restart the account chain"
+    );
+    assert_eq!(fallback_requests.len(), 1);
+}
+
+async fn assert_codex_header_timeout_does_not_restart_account_chain() {
+    let codex = spawn_mock_upstream_with_delay(
+        StatusCode::OK,
+        json!({
+            "id": "resp_codex_too_late",
+            "object": "response",
+            "status": "completed",
+            "output": []
+        }),
+        80,
+    )
+    .await;
+    let fallback = spawn_mock_upstream(
+        StatusCode::OK,
+        json!({
+            "id": "resp_after_codex_timeout",
+            "object": "response",
+            "created_at": 123,
+            "model": "gpt-5",
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "id": "msg_1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": "responses fallback after codex timeout"
+                }]
+            }],
+            "usage": { "input_tokens": 1, "output_tokens": 2, "total_tokens": 3 }
+        }),
+    )
+    .await;
+    let mut config = config_with_runtime_upstreams(&[
+        (
+            PROVIDER_CODEX,
+            10,
+            "codex-timeout-primary",
+            codex.base_url.as_str(),
+            FORMATS_RESPONSES,
+        ),
+        (
+            PROVIDER_RESPONSES,
+            5,
+            "responses-after-codex-timeout",
+            fallback.base_url.as_str(),
+            FORMATS_RESPONSES,
+        ),
+    ]);
+    config
+        .upstreams
+        .get_mut(PROVIDER_CODEX)
+        .expect("codex upstreams")
+        .groups[0]
+        .items[0]
+        .codex_account_id = None;
+    // 零 cooldown 是合法配置，也不能让外层 same-upstream retry 重跑整条账号链。
+    config.retryable_failure_cooldown = std::time::Duration::ZERO;
+    config.sync_response_timeout = std::time::Duration::from_millis(20);
+    let data_dir = next_test_data_dir("responses_unpinned_codex_header_timeout");
+    let state = build_test_state_handle(config, data_dir.clone()).await;
+    let expires_at = (OffsetDateTime::now_utc() + TimeDuration::days(1))
+        .format(&time::format_description::well_known::Rfc3339)
+        .expect("format expires_at");
+    seed_codex_account(
+        &state,
+        "codex-a.json",
+        "codex-access-a",
+        "chatgpt-a",
+        &expires_at,
+    )
+    .await;
+    seed_codex_account(
+        &state,
+        "codex-b.json",
+        "codex-access-b",
+        "chatgpt-b",
+        &expires_at,
+    )
+    .await;
+
+    let (status, response) = send_responses_request(state).await;
+    let codex_requests = codex.requests();
+    let fallback_requests = fallback.requests();
+
+    codex.abort();
+    fallback.abort();
+    let _ = std::fs::remove_dir_all(&data_dir);
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        response["output"][0]["content"][0]["text"].as_str(),
+        Some("responses fallback after codex timeout")
+    );
+    assert_eq!(codex_requests.len(), 2, "each Codex account runs once");
+    let mut account_ids = codex_requests
+        .iter()
+        .map(|request| {
+            request
+                .chatgpt_account_id
+                .clone()
+                .expect("Codex account header")
+        })
+        .collect::<Vec<_>>();
+    account_ids.sort();
+    assert_eq!(
+        account_ids,
+        vec!["chatgpt-a".to_string(), "chatgpt-b".to_string()]
+    );
+    assert_eq!(fallback_requests.len(), 1);
+}
+
 async fn assert_responses_stream_fallbacks_after_pre_header_timeout() {
     let primary = spawn_mock_upstream_with_delay(
         StatusCode::OK,
@@ -2177,10 +2776,13 @@ data: [DONE]\n\n",
 
     assert_eq!(response_status, StatusCode::OK);
     assert!(response_text.contains("from responses fallback"));
-    assert_eq!(primary_requests.len(), 2);
+    assert_eq!(
+        primary_requests.len(),
+        1,
+        "pinned Codex timeout is not replayed"
+    );
     assert_eq!(fallback_requests.len(), 1);
     assert_eq!(primary_requests[0].path, CODEX_RESPONSES_PATH);
-    assert_eq!(primary_requests[1].path, CODEX_RESPONSES_PATH);
     assert_eq!(fallback_requests[0].path, RESPONSES_PATH);
 }
 
@@ -5153,6 +5755,41 @@ fn responses_stream_request_falls_back_from_codex_when_headers_timeout_before_ou
 fn responses_stream_request_falls_back_when_upstream_disconnects_before_headers() {
     run_async(async {
         assert_responses_stream_fallbacks_after_pre_header_disconnect().await;
+    });
+}
+
+#[test]
+fn responses_stream_request_retries_disconnect_once_on_same_upstream_before_fallback() {
+    run_async(async {
+        assert_disconnect_once_retries_same_upstream_before_fallback().await;
+    });
+}
+
+#[test]
+fn responses_stream_request_falls_back_after_one_fresh_retry_disconnects_again() {
+    run_async(async {
+        assert_disconnect_twice_falls_back_after_one_fresh_retry().await;
+    });
+}
+
+#[test]
+fn responses_request_does_not_outer_replay_pinned_codex_transport_disconnect() {
+    run_async(async {
+        assert_codex_transport_disconnect_does_not_restart_account_chain(true).await;
+    });
+}
+
+#[test]
+fn responses_request_does_not_restart_codex_account_chain_after_transport_disconnect() {
+    run_async(async {
+        assert_codex_transport_disconnect_does_not_restart_account_chain(false).await;
+    });
+}
+
+#[test]
+fn responses_request_does_not_restart_codex_account_chain_after_header_timeout() {
+    run_async(async {
+        assert_codex_header_timeout_does_not_restart_account_chain().await;
     });
 }
 
