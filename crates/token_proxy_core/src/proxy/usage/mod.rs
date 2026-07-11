@@ -38,6 +38,44 @@ pub(crate) fn extract_usage_from_response(bytes: &Bytes) -> UsageSnapshot {
     snapshot_from_envelope(&value).unwrap_or_default()
 }
 
+pub(crate) fn extract_usage_from_stored_json(raw: &str) -> Option<UsageSnapshot> {
+    let value = serde_json::from_str::<Value>(raw).ok()?;
+    snapshot_from_envelope(&value).or_else(|| {
+        if contains_usage_fields(&value) {
+            Some(snapshot_from_usage_value(&value))
+        } else if contains_usage_metadata_fields(&value) {
+            Some(snapshot_from_usage_metadata_value(&value))
+        } else {
+            None
+        }
+    })
+}
+
+fn contains_usage_fields(value: &Value) -> bool {
+    [
+        "input_tokens",
+        "prompt_tokens",
+        "output_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ]
+    .iter()
+    .any(|field| value.get(*field).is_some())
+}
+
+fn contains_usage_metadata_fields(value: &Value) -> bool {
+    [
+        "promptTokenCount",
+        "candidatesTokenCount",
+        "totalTokenCount",
+        "cachedContentTokenCount",
+    ]
+    .iter()
+    .any(|field| value.get(*field).is_some())
+}
+
 fn extract_usage_from_event(value: &Value) -> Option<UsageSnapshot> {
     snapshot_from_envelope(value)
 }

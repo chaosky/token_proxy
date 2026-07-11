@@ -15,6 +15,8 @@ const summary: DashboardSummary = {
   inputTokens: 200_000,
   outputTokens: 10_000,
   cachedTokens: 20_000,
+  cacheReadTokens: 15_000,
+  cacheWriteTokens: 5_000,
   avgLatencyMs: 120,
   medianLatencyMs: 80,
 };
@@ -65,7 +67,7 @@ describe("dashboard/SectionCards", () => {
     expect(screen.queryByText("Logged")).not.toBeInTheDocument();
   });
 
-  it("places cached tokens after input and shows cache hit rate in the badge", () => {
+  it("shows cache activity in the footer and cache reads in the hit rate", () => {
     renderCards();
 
     expect(
@@ -77,7 +79,7 @@ describe("dashboard/SectionCards", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByText(m.dashboard_cache_hit_rate({
-        rate: "10%",
+        rate: "7.5%",
       }))
     ).toBeInTheDocument();
   });

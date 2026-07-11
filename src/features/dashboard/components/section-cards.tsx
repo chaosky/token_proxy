@@ -33,10 +33,12 @@ export function SectionCards({ summary }: SectionCardsProps) {
   const inputTokens = summary?.inputTokens ?? 0;
   const outputTokens = summary?.outputTokens ?? 0;
   const cachedTokens = summary?.cachedTokens ?? 0;
+  const cacheReadTokens = summary?.cacheReadTokens ?? 0;
   const avgLatencyMs = summary?.avgLatencyMs ?? 0;
   const medianLatencyMs = summary?.medianLatencyMs ?? 0;
   const successRate = totalRequests > 0 ? successRequests / totalRequests : 0;
-  const cacheHitRate = inputTokens > 0 ? cachedTokens / inputTokens : 0;
+  // Cache writes are cache activity, not cache hits.
+  const cacheHitRate = inputTokens > 0 ? cacheReadTokens / inputTokens : 0;
 
   const tokensHint = cachedTokens
     ? m.dashboard_tokens_hint_with_cache({
@@ -86,7 +88,7 @@ export function SectionCards({ summary }: SectionCardsProps) {
           <CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">
             {formatCompact(totalTokens)}
           </CardTitle>
-          {cachedTokens ? (
+          {cacheReadTokens ? (
             <CardAction>
               <Badge variant="outline">
                 {m.dashboard_cache_hit_rate({

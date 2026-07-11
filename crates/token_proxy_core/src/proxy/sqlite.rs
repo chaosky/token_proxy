@@ -10,6 +10,8 @@ use tokio::sync::{Mutex, OnceCell};
 
 use crate::paths::TokenProxyPaths;
 
+mod usage_backfill;
+
 struct SqlitePools {
     read: SqlitePool,
     write: SqlitePool,
@@ -126,6 +128,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
     .map_err(|err| format!("Failed to create request_logs table: {err}"))?;
 
     ensure_request_logs_columns(pool).await?;
+    usage_backfill::backfill_request_log_usage(pool).await?;
     super::pricing::init_model_pricing_table(pool).await?;
     super::pricing::backfill_request_log_costs(pool).await?;
 
@@ -646,6 +649,90 @@ LIMIT 1;
                 .as_deref(),
             Some("long")
         );
+    }
+
+    #[tokio::test]
+    async fn init_schema_backfills_precise_usage_from_legacy_usage_json() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite");
+
+        init_schema(&pool).await.expect("init schema");
+        let pricing_version = crate::proxy::pricing::default_model_pricing_settings().version;
+        sqlx::query(
+            r#"
+INSERT INTO request_logs (
+  ts_ms, path, provider, upstream_id, stream, status,
+  input_tokens, output_tokens, total_tokens, usage_json, latency_ms,
+  cost_nano_usd, pricing_version
+) VALUES (
+  1, '/v1/messages', 'anthropic', 'legacy', 0, 200,
+  10, 2, 12,
+  '{"input_tokens":10,"output_tokens":2,"cache_read_input_tokens":4,"cache_creation_input_tokens":8,"cache_creation":{"ephemeral_5m_input_tokens":3,"ephemeral_1h_input_tokens":2},"service_tier":"priority"}',
+  30, 123, ?
+);
+"#,
+        )
+        .bind(&pricing_version)
+        .execute(&pool)
+        .await
+        .expect("insert legacy usage row");
+
+        init_schema(&pool).await.expect("backfill legacy usage");
+
+        let row = sqlx::query(
+            r#"
+SELECT
+  input_tokens,
+  output_tokens,
+  total_tokens,
+  uncached_input_tokens,
+  cache_read_tokens,
+  cache_write_tokens,
+  cache_write_5m_tokens,
+  cache_write_1h_tokens,
+  service_tier,
+  cost_nano_usd,
+  pricing_version
+FROM request_logs
+LIMIT 1;
+"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("select backfilled usage");
+
+        assert_eq!(row.try_get::<i64, _>("input_tokens").ok(), Some(22));
+        assert_eq!(row.try_get::<i64, _>("output_tokens").ok(), Some(2));
+        assert_eq!(row.try_get::<i64, _>("total_tokens").ok(), Some(24));
+        assert_eq!(
+            row.try_get::<i64, _>("uncached_input_tokens").ok(),
+            Some(10)
+        );
+        assert_eq!(row.try_get::<i64, _>("cache_read_tokens").ok(), Some(4));
+        assert_eq!(row.try_get::<i64, _>("cache_write_tokens").ok(), Some(3));
+        assert_eq!(row.try_get::<i64, _>("cache_write_5m_tokens").ok(), Some(3));
+        assert_eq!(row.try_get::<i64, _>("cache_write_1h_tokens").ok(), Some(2));
+        assert_eq!(
+            row.try_get::<String, _>("service_tier").ok().as_deref(),
+            Some("priority")
+        );
+        assert_eq!(row.try_get::<i64, _>("cost_nano_usd").ok(), Some(123));
+        assert_eq!(
+            row.try_get::<String, _>("pricing_version").ok().as_deref(),
+            Some(pricing_version.as_str())
+        );
+
+        init_schema(&pool).await.expect("repeat usage backfill");
+        let count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM request_logs WHERE cache_read_tokens = 4;",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count backfilled usage rows");
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]
