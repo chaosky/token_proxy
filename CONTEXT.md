@@ -23,3 +23,11 @@ _Avoid_: Cache activity rate
 **Usage Breakdown**:
 将 Provider 原始用量拆成未缓存输入、Cache Read、各类 Cache Write、输出和图像 token 的规范化用量。
 _Avoid_: Cached total
+
+**Error Request**:
+最终 HTTP 状态码大于等于 400 的请求记录；它不参与长期请求统计，保留期结束后整条删除。
+_Avoid_: 仅以 response_error 是否存在判断错误请求
+
+**Request Detail**:
+为临时排障捕获的请求头、请求体和响应体，不包含请求统计字段或错误摘要。
+_Avoid_: Request Log（请求日志整行）
