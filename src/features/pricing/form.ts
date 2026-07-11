@@ -1,41 +1,48 @@
 import Big from "big.js";
 
 import type {
+  LongContextPricing,
   ModelPricingModel,
+  ModelPricingProfile,
   ModelPricingSettings,
   ModelPricingSettingsInput,
-  ModelPricingTier,
 } from "@/features/pricing/types";
 import { m } from "@/paraglide/messages.js";
 
-const NANO_USD_PER_USD = 1_000_000_000;
-const TOKENS_PER_MILLION = 1_000_000;
-const NANO_USD_PER_USD_PER_MILLION_TOKEN =
-  NANO_USD_PER_USD / TOKENS_PER_MILLION;
+const NANO_USD_PER_USD_PER_MILLION_TOKEN_BIG = new Big(1_000);
 const PRICE_DECIMAL_SCALE = 3;
-// Keep multiplier as fixed-point integer to match Rust pricing math.
 const PRICE_MULTIPLIER_SCALE = 1_000_000_000_000;
-const PRICE_MULTIPLIER_DECIMAL_SCALE = 12;
-const NANO_USD_PER_USD_PER_MILLION_TOKEN_BIG = new Big(
-  NANO_USD_PER_USD_PER_MILLION_TOKEN,
-);
 const PRICE_MULTIPLIER_SCALE_BIG = new Big(PRICE_MULTIPLIER_SCALE);
+const PRICE_MULTIPLIER_DECIMAL_SCALE = 12;
 
 let rowCounter = 0;
+
+export type ModelPricingProfileForm = {
+  input: string;
+  output: string;
+  cacheRead: string;
+  cacheWrite: string;
+  cacheWrite5m: string;
+  cacheWrite1h: string;
+  imageInput: string;
+  imageOutput: string;
+};
+
+export type LongContextPricingForm = {
+  enabled: boolean;
+  threshold: string;
+  inputMultiplier: string;
+  outputMultiplier: string;
+};
 
 export type ModelPricingFormRow = {
   id: string;
   modelId: string;
   aliasesText: string;
   priceMultiplier: string;
-  shortInputUsdPerMillion: string;
-  shortCachedUsdPerMillion: string;
-  shortOutputUsdPerMillion: string;
-  longEnabled: boolean;
-  longInputUsdPerMillion: string;
-  longCachedUsdPerMillion: string;
-  longOutputUsdPerMillion: string;
-  longContextInputTokenThreshold: string;
+  standard: ModelPricingProfileForm;
+  serviceTierProfiles: Record<string, ModelPricingProfileForm>;
+  longContext: LongContextPricingForm;
 };
 
 export type PricingFormResult =
@@ -47,21 +54,38 @@ function createRowId() {
   return `pricing-row-${Date.now()}-${rowCounter}`;
 }
 
+function emptyProfile(): ModelPricingProfileForm {
+  return {
+    input: "",
+    output: "",
+    cacheRead: "",
+    cacheWrite: "",
+    cacheWrite5m: "",
+    cacheWrite1h: "",
+    imageInput: "",
+    imageOutput: "",
+  };
+}
+
 export function createEmptyPricingRow(): ModelPricingFormRow {
   return {
     id: createRowId(),
     modelId: "",
     aliasesText: "",
     priceMultiplier: "1",
-    shortInputUsdPerMillion: "0.000",
-    shortCachedUsdPerMillion: "0.000",
-    shortOutputUsdPerMillion: "0.000",
-    longEnabled: false,
-    longInputUsdPerMillion: "0.000",
-    longCachedUsdPerMillion: "0.000",
-    longOutputUsdPerMillion: "0.000",
-    longContextInputTokenThreshold: "272000",
+    standard: emptyProfile(),
+    serviceTierProfiles: {},
+    longContext: {
+      enabled: false,
+      threshold: "272000",
+      inputMultiplier: "2",
+      outputMultiplier: "1.5",
+    },
   };
+}
+
+export function createEmptyProfileForm() {
+  return emptyProfile();
 }
 
 export function toPricingRows(settings: ModelPricingSettings): ModelPricingFormRow[] {
@@ -69,19 +93,25 @@ export function toPricingRows(settings: ModelPricingSettings): ModelPricingFormR
     id: createRowId(),
     modelId: model.modelId,
     aliasesText: model.aliases.join(", "),
-    priceMultiplier: formatPriceMultiplier(model.priceMultiplierScaled),
-    shortInputUsdPerMillion: formatUsdPerMillion(model.short.inputNanoUsdPerToken),
-    shortCachedUsdPerMillion: formatUsdPerMillion(model.short.cachedInputNanoUsdPerToken),
-    shortOutputUsdPerMillion: formatUsdPerMillion(model.short.outputNanoUsdPerToken),
-    longEnabled: model.long !== null,
-    longInputUsdPerMillion: formatUsdPerMillion(model.long?.inputNanoUsdPerToken ?? 0),
-    longCachedUsdPerMillion: formatUsdPerMillion(
-      model.long?.cachedInputNanoUsdPerToken ?? 0,
+    priceMultiplier: formatScaled(model.priceMultiplierScaled),
+    standard: profileToForm(model.standard),
+    serviceTierProfiles: Object.fromEntries(
+      Object.entries(model.serviceTierProfiles).map(([tier, profile]) => [
+        tier,
+        profileToForm(profile),
+      ]),
     ),
-    longOutputUsdPerMillion: formatUsdPerMillion(model.long?.outputNanoUsdPerToken ?? 0),
-    longContextInputTokenThreshold: String(
-      model.longContextInputTokenThreshold ?? 272000,
-    ),
+    longContext: {
+      enabled: model.longContext !== null,
+      threshold: String(model.longContext?.threshold ?? 272000),
+      inputMultiplier: formatScaled(
+        model.longContext?.inputMultiplierScaled ?? PRICE_MULTIPLIER_SCALE * 2,
+      ),
+      outputMultiplier: formatScaled(
+        model.longContext?.outputMultiplierScaled ??
+          (PRICE_MULTIPLIER_SCALE * 3) / 2,
+      ),
+    },
   }));
 }
 
@@ -89,13 +119,10 @@ export function toPricingSettingsInput(
   rows: readonly ModelPricingFormRow[],
 ): PricingFormResult {
   if (rows.length === 0) {
-    return {
-      ok: false,
-      message: m.model_pricing_error_at_least_one(),
-    };
+    return { ok: false, message: m.model_pricing_error_at_least_one() };
   }
 
-  const aliases = new Set<string>();
+  const lookupKeys = new Set<string>();
   const models: ModelPricingModel[] = [];
   for (const row of rows) {
     const modelId = row.modelId.trim();
@@ -103,134 +130,133 @@ export function toPricingSettingsInput(
       return { ok: false, message: m.model_pricing_error_model_required() };
     }
     const rowLookupKeys = new Set(modelLookupKeys(modelId));
-    const rowAliases: string[] = [];
+    const aliases: string[] = [];
     for (const alias of parseAliases(row.aliasesText)) {
       const aliasLookupKeys = modelLookupKeys(alias);
-      const newLookupKeys = aliasLookupKeys.filter(
-        (lookupKey) => !rowLookupKeys.has(lookupKey),
-      );
-      if (newLookupKeys.length === 0 && normalizeAlias(alias) === normalizeAlias(modelId)) {
+      if (aliasLookupKeys.every((lookupKey) => rowLookupKeys.has(lookupKey))) {
         continue;
       }
-      for (const lookupKey of newLookupKeys) {
-        rowLookupKeys.add(lookupKey);
-      }
-      rowAliases.push(alias);
+      aliasLookupKeys.forEach((lookupKey) => rowLookupKeys.add(lookupKey));
+      aliases.push(alias);
     }
     for (const lookupKey of rowLookupKeys) {
-      if (aliases.has(lookupKey)) {
+      if (lookupKeys.has(lookupKey)) {
         return {
           ok: false,
           message: m.model_pricing_error_duplicate_alias({ alias: lookupKey }),
         };
       }
-      aliases.add(lookupKey);
+      lookupKeys.add(lookupKey);
     }
-    const priceMultiplierScaled = parsePriceMultiplier(row.priceMultiplier);
+    const priceMultiplierScaled = parseScaled(row.priceMultiplier);
     if (priceMultiplierScaled === null) {
       return { ok: false, message: m.model_pricing_error_multiplier() };
     }
-
-    const short = parseTier({
-      input: row.shortInputUsdPerMillion,
-      cached: row.shortCachedUsdPerMillion,
-      output: row.shortOutputUsdPerMillion,
-      inputLabel: m.model_pricing_column_short_input(),
-      cachedLabel: m.model_pricing_column_short_cached(),
-      outputLabel: m.model_pricing_column_short_output(),
-    });
-    if (!short.ok) {
-      return short;
+    const standard = parseProfile(row.standard);
+    if (!standard.ok) {
+      return standard;
     }
-
-    const long = row.longEnabled
-      ? parseTier({
-          input: row.longInputUsdPerMillion,
-          cached: row.longCachedUsdPerMillion,
-          output: row.longOutputUsdPerMillion,
-          inputLabel: m.model_pricing_column_long_input(),
-          cachedLabel: m.model_pricing_column_long_cached(),
-          outputLabel: m.model_pricing_column_long_output(),
-        })
-      : null;
-    if (long && !long.ok) {
-      return long;
+    const serviceTierProfiles: Record<string, ModelPricingProfile> = {};
+    for (const [rawTier, profileForm] of Object.entries(row.serviceTierProfiles)) {
+      const tier = rawTier.trim().toLowerCase();
+      if (!tier || serviceTierProfiles[tier]) {
+        return { ok: false, message: m.model_pricing_error_service_tier() };
+      }
+      const profile = parseProfile(profileForm);
+      if (!profile.ok) {
+        return profile;
+      }
+      serviceTierProfiles[tier] = profile.profile;
     }
-
-    const threshold = row.longEnabled
-      ? parsePositiveInteger(row.longContextInputTokenThreshold)
-      : null;
-    if (row.longEnabled && threshold === null) {
-      return { ok: false, message: m.model_pricing_error_threshold() };
+    const longContext = parseLongContext(row.longContext);
+    if (!longContext.ok) {
+      return longContext;
     }
-
     models.push({
       modelId,
-      aliases: rowAliases,
+      aliases,
       priceMultiplierScaled,
-      short: short.tier,
-      long: long?.tier ?? null,
-      longContextInputTokenThreshold: threshold,
+      standard: standard.profile,
+      serviceTierProfiles,
+      longContext: longContext.value,
     });
   }
-
   return { ok: true, input: { models } };
 }
 
-function parseTier(args: {
-  input: string;
-  cached: string;
-  output: string;
-  inputLabel: string;
-  cachedLabel: string;
-  outputLabel: string;
-}): { ok: true; tier: ModelPricingTier } | { ok: false; message: string } {
-  const input = parseUsdPerMillion(args.input);
-  if (input === null) {
-    return {
-      ok: false,
-      message: m.model_pricing_error_price_number({ field: args.inputLabel }),
-    };
-  }
-  const cached = parseUsdPerMillion(args.cached);
-  if (cached === null) {
-    return {
-      ok: false,
-      message: m.model_pricing_error_price_number({ field: args.cachedLabel }),
-    };
-  }
-  const output = parseUsdPerMillion(args.output);
-  if (output === null) {
-    return {
-      ok: false,
-      message: m.model_pricing_error_price_number({ field: args.outputLabel }),
-    };
-  }
-
+function profileToForm(profile: ModelPricingProfile): ModelPricingProfileForm {
   return {
-    ok: true,
-    tier: {
-      inputNanoUsdPerToken: input,
-      cachedInputNanoUsdPerToken: cached,
-      outputNanoUsdPerToken: output,
-    },
+    input: formatPrice(profile.inputNanoUsdPerToken),
+    output: formatPrice(profile.outputNanoUsdPerToken),
+    cacheRead: formatPrice(profile.cacheReadNanoUsdPerToken),
+    cacheWrite: formatPrice(profile.cacheWriteNanoUsdPerToken),
+    cacheWrite5m: formatPrice(profile.cacheWrite5mNanoUsdPerToken),
+    cacheWrite1h: formatPrice(profile.cacheWrite1hNanoUsdPerToken),
+    imageInput: formatPrice(profile.imageInputNanoUsdPerToken),
+    imageOutput: formatPrice(profile.imageOutputNanoUsdPerToken),
   };
 }
 
-function formatUsdPerMillion(value: number) {
-  return new Big(value)
-    .div(NANO_USD_PER_USD_PER_MILLION_TOKEN_BIG)
-    .toFixed(PRICE_DECIMAL_SCALE);
+function parseProfile(
+  form: ModelPricingProfileForm,
+): { ok: true; profile: ModelPricingProfile } | { ok: false; message: string } {
+  const values = {
+    inputNanoUsdPerToken: parseOptionalPrice(form.input),
+    outputNanoUsdPerToken: parseOptionalPrice(form.output),
+    cacheReadNanoUsdPerToken: parseOptionalPrice(form.cacheRead),
+    cacheWriteNanoUsdPerToken: parseOptionalPrice(form.cacheWrite),
+    cacheWrite5mNanoUsdPerToken: parseOptionalPrice(form.cacheWrite5m),
+    cacheWrite1hNanoUsdPerToken: parseOptionalPrice(form.cacheWrite1h),
+    imageInputNanoUsdPerToken: parseOptionalPrice(form.imageInput),
+    imageOutputNanoUsdPerToken: parseOptionalPrice(form.imageOutput),
+  };
+  if (Object.values(values).some((value) => value === undefined)) {
+    return {
+      ok: false,
+      message: m.model_pricing_error_price_number({
+        field: m.model_pricing_advanced(),
+      }),
+    };
+  }
+  return { ok: true, profile: values as ModelPricingProfile };
 }
 
-function formatPriceMultiplier(value: number) {
+function parseLongContext(
+  form: LongContextPricingForm,
+): { ok: true; value: LongContextPricing | null } | { ok: false; message: string } {
+  if (!form.enabled) {
+    return { ok: true, value: null };
+  }
+  const threshold = parsePositiveInteger(form.threshold);
+  const inputMultiplierScaled = parseScaled(form.inputMultiplier);
+  const outputMultiplierScaled = parseScaled(form.outputMultiplier);
+  if (threshold === null || inputMultiplierScaled === null || outputMultiplierScaled === null) {
+    return { ok: false, message: m.model_pricing_error_threshold() };
+  }
+  return {
+    ok: true,
+    value: { threshold, inputMultiplierScaled, outputMultiplierScaled },
+  };
+}
+
+function formatPrice(value: number | null) {
+  return value === null
+    ? ""
+    : new Big(value)
+        .div(NANO_USD_PER_USD_PER_MILLION_TOKEN_BIG)
+        .toFixed(PRICE_DECIMAL_SCALE);
+}
+
+function formatScaled(value: number) {
   const formatted = new Big(value)
     .div(PRICE_MULTIPLIER_SCALE_BIG)
     .toFixed(PRICE_MULTIPLIER_DECIMAL_SCALE);
-  return formatted.includes(".") ? formatted.replace(/0+$/, "").replace(/\.$/, "") : formatted;
+  return formatted.includes(".")
+    ? formatted.replace(/0+$/, "").replace(/\.$/, "")
+    : formatted;
 }
 
-function parseUsdPerMillion(value: string) {
+function parseOptionalPrice(value: string): number | null | undefined {
   const trimmed = value.trim();
   if (!trimmed) {
     return null;
@@ -238,35 +264,25 @@ function parseUsdPerMillion(value: string) {
   try {
     const parsed = new Big(trimmed);
     if (parsed.lt(0)) {
-      return null;
+      return undefined;
     }
-    const nanoUsdPerToken = parsed
+    const scaled = parsed
       .times(NANO_USD_PER_USD_PER_MILLION_TOKEN_BIG)
       .round(0, Big.roundHalfUp);
-    if (nanoUsdPerToken.gt(Number.MAX_SAFE_INTEGER)) {
-      return null;
-    }
-    return nanoUsdPerToken.toNumber();
+    return scaled.gt(Number.MAX_SAFE_INTEGER) ? undefined : scaled.toNumber();
   } catch {
-    return null;
+    return undefined;
   }
 }
 
-function parsePriceMultiplier(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
+function parseScaled(value: string) {
   try {
-    const parsed = new Big(trimmed);
+    const parsed = new Big(value.trim());
     if (parsed.lte(0)) {
       return null;
     }
     const scaled = parsed.times(PRICE_MULTIPLIER_SCALE_BIG).round(0, Big.roundHalfUp);
-    if (scaled.gt(Number.MAX_SAFE_INTEGER)) {
-      return null;
-    }
-    return scaled.toNumber();
+    return scaled.gt(Number.MAX_SAFE_INTEGER) ? null : scaled.toNumber();
   } catch {
     return null;
   }
@@ -281,25 +297,19 @@ function parsePositiveInteger(value: string) {
 }
 
 function parseAliases(value: string) {
-  const seen = new Set<string>();
-  const seenAliases = new Set<string>();
   const aliases: string[] = [];
+  const seen = new Set<string>();
   for (const item of value.split(/[,\n]/)) {
-    const trimmed = item.trim();
-    if (!trimmed) {
+    const alias = item.trim();
+    if (!alias) {
       continue;
     }
-    const normalized = normalizeAlias(trimmed);
-    const lookupKeys = modelLookupKeys(trimmed);
-    const newLookupKeys = lookupKeys.filter((lookupKey) => !seen.has(lookupKey));
-    if (newLookupKeys.length === 0 && seenAliases.has(normalized)) {
+    const normalized = normalizeAlias(alias);
+    if (seen.has(normalized)) {
       continue;
     }
-    for (const lookupKey of newLookupKeys) {
-      seen.add(lookupKey);
-    }
-    seenAliases.add(normalized);
-    aliases.push(trimmed);
+    seen.add(normalized);
+    aliases.push(alias);
   }
   return aliases;
 }
@@ -313,14 +323,17 @@ function modelLookupKeys(value: string) {
   const keys = [canonicalModelLookupKey(normalized)];
   const slashIndex = normalized.indexOf("/");
   if (slashIndex >= 0) {
-    const suffix = canonicalModelLookupKey(normalized.slice(slashIndex + 1));
-    if (suffix && !keys.includes(suffix)) {
-      keys.push(suffix);
-    }
+    keys.push(canonicalModelLookupKey(normalized.slice(slashIndex + 1)));
   }
-  return keys.filter((key) => key.length > 0);
+  return [...new Set(keys.filter(Boolean))];
 }
 
 function canonicalModelLookupKey(value: string) {
-  return value === "claude-opus-4.7" ? "claude-opus-4-7" : value;
+  if (value === "claude-opus-4.7") {
+    return "claude-opus-4-7";
+  }
+  if (value === "claude-opus-4.8") {
+    return "claude-opus-4-8";
+  }
+  return value;
 }

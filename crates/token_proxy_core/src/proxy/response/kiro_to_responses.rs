@@ -18,15 +18,9 @@ pub(super) fn extract_kiro_usage_snapshot(
         &parsed.content,
         &parsed.reasoning,
     );
-    let usage_snapshot = UsageSnapshot {
-        usage: usage_from_kiro(&usage),
-        cached_tokens: None,
-        usage_json: usage_json_from_kiro(&usage),
-    };
-    if usage_snapshot.usage.is_none()
-        && usage_snapshot.usage_json.is_none()
-        && usage_snapshot.cached_tokens.is_none()
-    {
+    let usage_snapshot =
+        UsageSnapshot::from_uncached_usage(usage_from_kiro(&usage), usage_json_from_kiro(&usage));
+    if usage_snapshot.is_empty() {
         return None;
     }
     Some(usage_snapshot)

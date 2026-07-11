@@ -903,9 +903,31 @@ where
         let mut usage_obj = Map::new();
         usage_obj.insert("input_tokens".to_string(), json!(input_tokens));
         usage_obj.insert("output_tokens".to_string(), json!(output_tokens));
-        if let Some(cached) = usage.cached_tokens {
-            // Best-effort mapping: treat cached tokens as "cache_read_input_tokens".
-            usage_obj.insert("cache_read_input_tokens".to_string(), json!(cached));
+        let billable = &usage.billable_usage;
+        if billable.cache_read_tokens > 0 {
+            usage_obj.insert(
+                "cache_read_input_tokens".to_string(),
+                json!(billable.cache_read_tokens),
+            );
+        }
+        let cache_write = billable
+            .cache_write_tokens
+            .saturating_add(billable.cache_write_5m_tokens)
+            .saturating_add(billable.cache_write_1h_tokens);
+        if cache_write > 0 {
+            usage_obj.insert(
+                "cache_creation_input_tokens".to_string(),
+                json!(cache_write),
+            );
+            if billable.cache_write_5m_tokens > 0 || billable.cache_write_1h_tokens > 0 {
+                usage_obj.insert(
+                    "cache_creation".to_string(),
+                    json!({
+                        "ephemeral_5m_input_tokens": billable.cache_write_5m_tokens,
+                        "ephemeral_1h_input_tokens": billable.cache_write_1h_tokens,
+                    }),
+                );
+            }
         }
 
         self.out.push_back(super::anthropic_event_sse(

@@ -7,7 +7,7 @@ fn series_point(ts_ms: u64, total_requests: u64) -> DashboardSeriesPoint {
         error_requests: 0,
         input_tokens: total_requests,
         output_tokens: 0,
-        cached_tokens: 0,
+        usage: DashboardUsageBreakdown::default(),
         total_tokens: total_requests,
     }
 }
@@ -74,45 +74,9 @@ async fn setup_test_db() -> SqlitePool {
         .await
         .expect("Failed to create in-memory database");
 
-    sqlx::query(
-        r#"
-        CREATE TABLE request_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts_ms INTEGER NOT NULL,
-            client_ip TEXT,
-            path TEXT NOT NULL,
-            provider TEXT NOT NULL,
-            upstream_id TEXT NOT NULL,
-            account_id TEXT,
-            model TEXT,
-            mapped_model TEXT,
-            stream INTEGER NOT NULL,
-            status INTEGER NOT NULL,
-            input_tokens INTEGER,
-            output_tokens INTEGER,
-            total_tokens INTEGER,
-            cached_tokens INTEGER,
-            usage_json TEXT,
-            upstream_request_id TEXT,
-            request_headers TEXT,
-            request_body TEXT,
-            response_error TEXT,
-            latency_ms INTEGER NOT NULL,
-            upstream_first_byte_ms INTEGER,
-            upstream_response_headers_ms INTEGER,
-            upstream_first_body_chunk_ms INTEGER,
-            first_client_flush_ms INTEGER,
-            first_output_ms INTEGER,
-            cost_nano_usd INTEGER,
-            pricing_version TEXT,
-            pricing_model TEXT,
-            pricing_context_tier TEXT
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .expect("Failed to create table");
+    crate::proxy::sqlite::init_schema(&pool)
+        .await
+        .expect("Failed to initialize schema");
 
     pool
 }
@@ -141,7 +105,7 @@ async fn insert_request(
     input_tokens: Option<i64>,
     output_tokens: Option<i64>,
     total_tokens: Option<i64>,
-    cached_tokens: Option<i64>,
+    cache_read_tokens: Option<i64>,
     latency_ms: i64,
 ) {
     sqlx::query(
@@ -157,10 +121,11 @@ async fn insert_request(
             input_tokens,
             output_tokens,
             total_tokens,
-            cached_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
             latency_ms
         )
-        VALUES (?, '/test', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+        VALUES (?, '/test', ?, ?, ?, 0, ?, ?, ?, ?, ?, 0, ?)
         "#,
     )
     .bind(ts_ms)
@@ -171,7 +136,7 @@ async fn insert_request(
     .bind(input_tokens)
     .bind(output_tokens)
     .bind(total_tokens)
-    .bind(cached_tokens)
+    .bind(cache_read_tokens)
     .bind(latency_ms)
     .execute(pool)
     .await
@@ -201,14 +166,15 @@ async fn insert_priced_request(
             input_tokens,
             output_tokens,
             total_tokens,
-            cached_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
             latency_ms,
             cost_nano_usd,
             pricing_version,
             pricing_model,
             pricing_context_tier
         )
-        VALUES (?, '/test', 'openai', ?, 'gpt-5.4', 'gpt-5.4', 0, 200, 100, 50, 150, 10, 30, ?, ?, ?, ?)
+        VALUES (?, '/test', 'openai', ?, 'gpt-5.4', 'gpt-5.4', 0, 200, 100, 50, 150, 10, 0, 30, ?, ?, ?, ?)
         "#,
     )
     .bind(ts_ms)
@@ -414,7 +380,8 @@ async fn read_snapshot_filters_by_upstream_and_keeps_merged_upstream_and_account
     assert_eq!(snapshot.summary.error_requests, 0);
     assert_eq!(snapshot.summary.cost_nano_usd, 0);
     assert_eq!(snapshot.summary.total_tokens, 35);
-    assert_eq!(snapshot.summary.cached_tokens, 6);
+    assert_eq!(snapshot.summary.usage.cache_read_tokens, 6);
+    assert_eq!(snapshot.summary.usage.cache_write_tokens, 0);
     assert_eq!(snapshot.summary.avg_latency_ms, 35);
     assert_eq!(snapshot.summary.median_latency_ms, 35);
 
@@ -527,6 +494,67 @@ async fn read_snapshot_sums_logged_costs_and_returns_recent_pricing_fields() {
 }
 
 #[tokio::test]
+async fn read_snapshot_round_trips_precise_usage_components() {
+    let pool = setup_test_db().await;
+    sqlx::query(
+        r#"
+        INSERT INTO request_logs (
+          ts_ms, path, provider, upstream_id, stream, status,
+          input_tokens, output_tokens, uncached_input_tokens,
+          cache_read_tokens, cache_write_tokens,
+          cache_write_5m_tokens, cache_write_1h_tokens,
+          image_input_tokens, image_output_tokens, total_tokens,
+          service_tier, latency_ms
+        ) VALUES (
+          100, '/responses', 'openai-response', 'alpha', 0, 200,
+          121, 13, 80,
+          20, 5,
+          10, 6,
+          4, 3, 134,
+          'priority', 30
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("insert usage request");
+
+    let snapshot = read_snapshot(
+        &pool,
+        DashboardRange {
+            from_ts_ms: None,
+            to_ts_ms: None,
+        },
+        Some(0),
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("read dashboard snapshot");
+
+    assert_eq!(snapshot.summary.usage.uncached_input_tokens, 80);
+    assert_eq!(snapshot.summary.usage.cache_read_tokens, 20);
+    assert_eq!(snapshot.summary.usage.cache_write_tokens, 5);
+    assert_eq!(snapshot.summary.usage.cache_write_5m_tokens, 10);
+    assert_eq!(snapshot.summary.usage.cache_write_1h_tokens, 6);
+    assert_eq!(snapshot.summary.usage.cached_tokens, 41);
+    assert_eq!(snapshot.summary.usage.image_input_tokens, 4);
+    assert_eq!(snapshot.summary.usage.image_output_tokens, 3);
+
+    let recent = snapshot.recent.first().expect("recent request");
+    assert_eq!(recent.cached_tokens, Some(41));
+    assert_eq!(recent.uncached_input_tokens, Some(80));
+    assert_eq!(recent.cache_read_tokens, Some(20));
+    assert_eq!(recent.cache_write_tokens, Some(5));
+    assert_eq!(recent.cache_write_5m_tokens, Some(10));
+    assert_eq!(recent.cache_write_1h_tokens, Some(6));
+    assert_eq!(recent.image_input_tokens, Some(4));
+    assert_eq!(recent.image_output_tokens, Some(3));
+    assert_eq!(recent.service_tier.as_deref(), Some("priority"));
+}
+
+#[tokio::test]
 async fn read_snapshot_returns_recent_client_ip() {
     let pool = setup_test_db().await;
     insert_request_with_client_ip(&pool, 100, "203.0.113.5").await;
@@ -547,6 +575,7 @@ async fn read_snapshot_returns_recent_client_ip() {
 
     assert_eq!(snapshot.recent.len(), 1);
     assert_eq!(snapshot.recent[0].client_ip.as_deref(), Some("203.0.113.5"));
+    assert_eq!(snapshot.recent[0].cached_tokens, None);
 }
 
 #[tokio::test]

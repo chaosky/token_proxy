@@ -970,11 +970,7 @@ fn stream_first_output_timeout_response(
         "upstream stream first output timeout"
     );
     context.status = StatusCode::GATEWAY_TIMEOUT.as_u16();
-    let empty_usage = UsageSnapshot {
-        usage: None,
-        cached_tokens: None,
-        usage_json: None,
-    };
+    let empty_usage = UsageSnapshot::default();
     let entry = build_log_entry(context, empty_usage, Some(message.clone()));
     log.clone().write_detached(entry);
     let mut response = http::error_response(StatusCode::GATEWAY_TIMEOUT, &message);
@@ -1031,11 +1027,7 @@ fn responses_prelude_retry_response(
         error_code = ?error.code,
         "retryable Responses stream error before first business output"
     );
-    let empty_usage = UsageSnapshot {
-        usage: None,
-        cached_tokens: None,
-        usage_json: None,
-    };
+    let empty_usage = UsageSnapshot::default();
     let entry = build_log_entry(context, empty_usage, Some(message.clone()));
     log.clone().write_detached(entry);
 
@@ -1131,11 +1123,7 @@ fn stream_error_response(
         "upstream stream read failed before first business output"
     );
     context.status = status.as_u16();
-    let empty_usage = UsageSnapshot {
-        usage: None,
-        cached_tokens: None,
-        usage_json: None,
-    };
+    let empty_usage = UsageSnapshot::default();
     let entry = build_log_entry(context, empty_usage, Some(message.clone()));
     log.clone().write_detached(entry);
     let mut response = http::error_response(status, &message);

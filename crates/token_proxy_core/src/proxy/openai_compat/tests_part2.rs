@@ -184,6 +184,34 @@ fn chat_request_to_responses_maps_advanced_optional_params() {
 }
 
 #[test]
+fn grok_reasoning_effort_round_trips_between_chat_and_responses() {
+    let http_clients = ProxyHttpClients::new().expect("http clients");
+    let responses = transform_request_value(
+        FormatTransform::ChatToResponses,
+        json!({
+            "model": "grok-4.20",
+            "messages": [{ "role": "user", "content": "hi" }],
+            "reasoning_effort": "high"
+        }),
+        &http_clients,
+        None,
+    );
+
+    assert_eq!(responses["model"], json!("grok-4.20"));
+    assert_eq!(responses["reasoning"]["effort"], json!("high"));
+
+    let chat = transform_request_value(
+        FormatTransform::ResponsesToChat,
+        responses,
+        &http_clients,
+        None,
+    );
+
+    assert_eq!(chat["model"], json!("grok-4.20"));
+    assert_eq!(chat["reasoning_effort"], json!("high"));
+}
+
+#[test]
 fn chat_request_to_responses_uses_prompt_cache_key_hint_when_missing() {
     let http_clients = ProxyHttpClients::new().expect("http clients");
     let input = bytes_from_json(json!({

@@ -150,15 +150,37 @@ pub fn run() {
             let paths_for_config = paths.clone();
             let app_proxy_for_config = app_proxy_state.clone();
             tauri::async_runtime::spawn(async move {
-                if let Ok(response) = proxy::config::read_config(paths_for_config.as_ref()).await {
-                    logging_state.apply_level(response.config.log_level);
-                    tray_state_for_config
-                        .apply_config(&response.config.tray_token_rate)
-                        .await;
-                    if let Ok(proxy_url) =
-                        proxy::config::app_proxy_url_from_config(&response.config)
-                    {
-                        app_proxy::set(&app_proxy_for_config, proxy_url).await;
+                let pricing_proxy_url = match proxy::config::read_config(paths_for_config.as_ref())
+                    .await
+                {
+                    Ok(response) => {
+                        logging_state.apply_level(response.config.log_level);
+                        tray_state_for_config
+                            .apply_config(&response.config.tray_token_rate)
+                            .await;
+                        let proxy_url = proxy::config::app_proxy_url_from_config(&response.config)
+                            .unwrap_or(None);
+                        app_proxy::set(&app_proxy_for_config, proxy_url.clone()).await;
+                        proxy_url
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, "pricing catalog refresh using direct connection because config read failed");
+                        None
+                    }
+                };
+                match proxy::sqlite::open_write_pool(paths_for_config.as_ref()).await {
+                    Ok(pool) => {
+                        if let Err(err) = proxy::pricing::refresh_remote_model_pricing_catalog(
+                            &pool,
+                            pricing_proxy_url.as_deref(),
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %err, "model pricing catalog refresh failed; cached or bundled catalog remains active");
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, "model pricing catalog refresh skipped because database could not open");
                     }
                 }
             });

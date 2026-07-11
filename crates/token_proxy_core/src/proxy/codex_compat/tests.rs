@@ -187,6 +187,9 @@ fn responses_request_to_codex_prefers_model_hint_over_body_model() {
 #[test]
 fn responses_request_to_codex_preserves_gpt_5_6_models() {
     let cases = [
+        ("gpt-5.6", "gpt-5.6-sol"),
+        ("gpt-5.6-max", "gpt-5.6-sol"),
+        ("gpt-5.6-high", "gpt-5.6-sol"),
         ("openai/gpt-5.6-sol", "gpt-5.6-sol"),
         ("gpt-5.6-terra-high", "gpt-5.6-terra"),
         ("gpt-5.6-luna-xhigh", "gpt-5.6-luna"),
@@ -210,6 +213,8 @@ fn responses_request_to_codex_preserves_gpt_5_6_models() {
 fn supported_codex_models_include_current_codex_families() {
     let models = supported_codex_model_ids();
 
+    assert!(models.contains(&"gpt-5.6".to_string()));
+    assert!(models.contains(&"gpt-5.6-max".to_string()));
     assert!(models.contains(&"gpt-5.6-sol".to_string()));
     assert!(models.contains(&"gpt-5.6-sol-high".to_string()));
     assert!(models.contains(&"gpt-5.6-terra".to_string()));
@@ -335,6 +340,38 @@ fn responses_compact_request_to_codex_normalizes_gpt_5_5_and_removes_stream_stor
     assert_eq!(value["stream"], true);
     assert_eq!(value["store"], false);
     assert!(value.get("include").is_none());
+}
+
+#[test]
+fn responses_request_to_codex_preserves_gpt_5_6_max_effort() {
+    let input = json!({
+        "model": "gpt-5.6-max",
+        "input": "hi"
+    });
+
+    let output = responses_request_to_codex(&Bytes::from(input.to_string()), None)
+        .expect("convert responses request");
+    let value: serde_json::Value = serde_json::from_slice(&output).expect("json");
+
+    assert_eq!(value["model"], "gpt-5.6-sol");
+    assert_eq!(value["reasoning"]["effort"], "max");
+}
+
+#[test]
+fn responses_compact_request_to_codex_downgrades_gpt_5_6_max_effort() {
+    let input = json!({
+        "model": "gpt-5.6-sol",
+        "reasoning": { "effort": "max", "summary": "auto" },
+        "input": "hi"
+    });
+
+    let output = responses_compact_request_to_codex(&Bytes::from(input.to_string()), None)
+        .expect("convert compact responses request");
+    let value: serde_json::Value = serde_json::from_slice(&output).expect("json");
+
+    assert_eq!(value["model"], "gpt-5.6-sol");
+    assert_eq!(value["reasoning"]["effort"], "xhigh");
+    assert_eq!(value["reasoning"]["summary"], "auto");
 }
 
 #[test]

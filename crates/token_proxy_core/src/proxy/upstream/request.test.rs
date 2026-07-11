@@ -246,7 +246,7 @@ fn codex_headers_do_not_send_version_header() {
         .get("user-agent")
         .and_then(|value| value.to_str().ok())
         .expect("codex user-agent");
-    assert!(user_agent.starts_with("codex_cli_rs/"));
+    assert_eq!(user_agent, "codex_cli_rs/0.144.1 (token_proxy)");
     assert_eq!(
         built
             .get("originator")
@@ -334,7 +334,7 @@ fn codex_headers_override_non_codex_client_identity() {
 }
 
 #[test]
-fn codex_headers_preserve_native_codex_client_identity() {
+fn codex_headers_replace_native_identity_below_minimum_version() {
     let mut headers = HeaderMap::new();
     headers.insert(
         "user-agent",
@@ -364,7 +364,7 @@ fn codex_headers_preserve_native_codex_client_identity() {
         built
             .get("user-agent")
             .and_then(|value| value.to_str().ok()),
-        Some("codex_cli_rs/0.135.0 (Mac OS 15.5.0; arm64) codex-cli")
+        Some("codex_cli_rs/0.144.1 (token_proxy)")
     );
     assert_eq!(
         built
@@ -390,6 +390,43 @@ fn codex_headers_preserve_native_codex_client_identity() {
     );
     assert!(!built.contains_key("openai-beta"));
     assert!(!built.contains_key("connection"));
+}
+
+#[test]
+fn codex_headers_pair_originator_with_final_official_user_agent() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "user-agent",
+        HeaderValue::from_static(
+            "codex-tui/0.145.0 (Mac OS X 15.5.0; arm64) iTerm (codex-tui; 0.145.0)",
+        ),
+    );
+    headers.insert("originator", HeaderValue::from_static("codex_cli_rs"));
+
+    let built = build_request_headers(
+        "codex",
+        "/v1/responses",
+        &headers,
+        http::UpstreamAuthHeader {
+            name: AUTHORIZATION,
+            value: HeaderValue::from_static("Bearer upstream"),
+        },
+        None,
+        None,
+    );
+
+    assert_eq!(
+        built
+            .get("user-agent")
+            .and_then(|value| value.to_str().ok()),
+        Some("codex-tui/0.145.0 (Mac OS X 15.5.0; arm64) iTerm (codex-tui; 0.145.0)")
+    );
+    assert_eq!(
+        built
+            .get("originator")
+            .and_then(|value| value.to_str().ok()),
+        Some("codex-tui")
+    );
 }
 
 #[test]

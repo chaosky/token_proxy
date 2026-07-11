@@ -362,11 +362,10 @@ impl<S> KiroToAnthropicState<S> {
             &self.content,
             &self.reasoning,
         );
-        let usage_snapshot = UsageSnapshot {
-            usage: usage_from_kiro(&self.usage),
-            cached_tokens: None,
-            usage_json: usage_json_from_kiro(&self.usage),
-        };
+        let usage_snapshot = UsageSnapshot::from_uncached_usage(
+            usage_from_kiro(&self.usage),
+            usage_json_from_kiro(&self.usage),
+        );
         let mut entry = build_log_entry(&self.context, usage_snapshot, response_error);
         let mut response_body = String::new();
         if !self.reasoning.is_empty() {

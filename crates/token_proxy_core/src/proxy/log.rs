@@ -6,7 +6,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use super::pricing::{calculate_request_cost, default_model_pricing_settings};
+use super::pricing::{calculate_request_cost, default_model_pricing_settings, BillableUsage};
 
 #[cfg(debug_assertions)]
 macro_rules! debug_log_error {
@@ -30,8 +30,37 @@ pub(crate) struct TokenUsage {
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(crate) struct UsageSnapshot {
     pub(crate) usage: Option<TokenUsage>,
-    pub(crate) cached_tokens: Option<u64>,
+    pub(crate) billable_usage: BillableUsage,
+    pub(crate) service_tier: Option<String>,
     pub(crate) usage_json: Option<Value>,
+}
+
+impl UsageSnapshot {
+    pub(crate) fn from_uncached_usage(
+        usage: Option<TokenUsage>,
+        usage_json: Option<Value>,
+    ) -> Self {
+        let billable_usage = usage
+            .as_ref()
+            .map(|usage| BillableUsage {
+                uncached_input_tokens: usage.input_tokens.unwrap_or(0),
+                output_tokens: usage.output_tokens.unwrap_or(0),
+                ..BillableUsage::default()
+            })
+            .unwrap_or_default();
+        Self {
+            usage,
+            billable_usage,
+            service_tier: None,
+            usage_json,
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.usage.is_none()
+            && self.billable_usage == BillableUsage::default()
+            && self.usage_json.is_none()
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -47,7 +76,8 @@ pub(crate) struct LogEntry {
     pub(crate) stream: bool,
     pub(crate) status: u16,
     pub(crate) usage: Option<TokenUsage>,
-    pub(crate) cached_tokens: Option<u64>,
+    pub(crate) billable_usage: BillableUsage,
+    pub(crate) service_tier: Option<String>,
     pub(crate) usage_json: Option<Value>,
     pub(crate) upstream_request_id: Option<String>,
     pub(crate) request_headers: Option<String>,
@@ -211,15 +241,17 @@ pub(crate) fn build_log_entry(
         .or(upstream_first_body_chunk_ms)
         .or(timing.upstream_response_headers_ms)
         .unwrap_or_else(|| context.start.elapsed().as_millis());
-    let usage_ref = usage.usage.as_ref();
+    let service_tier = usage
+        .service_tier
+        .clone()
+        .or_else(|| service_tier_from_request_body(context.request_body.as_deref()));
     let pricing_settings = default_model_pricing_settings();
     let request_cost = calculate_request_cost(
         &pricing_settings,
         context.model.as_deref(),
         context.mapped_model.as_deref(),
-        usage_ref.and_then(|usage| usage.input_tokens),
-        usage_ref.and_then(|usage| usage.output_tokens),
-        usage.cached_tokens,
+        service_tier.as_deref(),
+        &usage.billable_usage,
     );
     LogEntry {
         ts_ms: now_ms(),
@@ -233,7 +265,8 @@ pub(crate) fn build_log_entry(
         stream: context.stream,
         status: context.status,
         usage: usage.usage,
-        cached_tokens: usage.cached_tokens,
+        billable_usage: usage.billable_usage,
+        service_tier,
         usage_json: usage.usage_json,
         upstream_request_id: context.upstream_request_id.clone(),
         request_headers: context.request_headers.clone(),
@@ -272,6 +305,16 @@ fn captures_request_detail(
     request_headers.is_some() || request_body.is_some()
 }
 
+fn service_tier_from_request_body(request_body: Option<&str>) -> Option<String> {
+    let value = serde_json::from_str::<Value>(request_body?).ok()?;
+    value
+        .get("service_tier")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+}
+
 fn now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -284,7 +327,8 @@ async fn insert_log_entry(pool: &SqlitePool, entry: &LogEntry) -> Result<(), sql
     let input_tokens = usage.and_then(|usage| usage.input_tokens).map(to_i64_u64);
     let output_tokens = usage.and_then(|usage| usage.output_tokens).map(to_i64_u64);
     let total_tokens = usage.and_then(|usage| usage.total_tokens).map(to_i64_u64);
-    let cached_tokens = entry.cached_tokens.map(to_i64_u64);
+    let billable = &entry.billable_usage;
+    let billable_value = |value| usage.map(|_| to_i64_u64(value));
     let pricing_settings = super::pricing::read_model_pricing_settings(pool)
         .await
         .unwrap_or_else(|_| default_model_pricing_settings());
@@ -292,9 +336,8 @@ async fn insert_log_entry(pool: &SqlitePool, entry: &LogEntry) -> Result<(), sql
         &pricing_settings,
         entry.model.as_deref(),
         entry.mapped_model.as_deref(),
-        usage.and_then(|usage| usage.input_tokens),
-        usage.and_then(|usage| usage.output_tokens),
-        entry.cached_tokens,
+        entry.service_tier.as_deref(),
+        billable,
     );
     let cost_nano_usd = request_cost
         .as_ref()
@@ -321,7 +364,14 @@ INSERT INTO request_logs (
   input_tokens,
   output_tokens,
   total_tokens,
-  cached_tokens,
+  uncached_input_tokens,
+  cache_read_tokens,
+  cache_write_tokens,
+  cache_write_5m_tokens,
+  cache_write_1h_tokens,
+  image_input_tokens,
+  image_output_tokens,
+  service_tier,
   usage_json,
   upstream_request_id,
   request_headers,
@@ -338,7 +388,7 @@ INSERT INTO request_logs (
   pricing_version,
   pricing_model,
   pricing_context_tier
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 "#,
     )
     .bind(to_i64_u128(entry.ts_ms))
@@ -354,7 +404,14 @@ INSERT INTO request_logs (
     .bind(input_tokens)
     .bind(output_tokens)
     .bind(total_tokens)
-    .bind(cached_tokens)
+    .bind(billable_value(billable.uncached_input_tokens))
+    .bind(billable_value(billable.cache_read_tokens))
+    .bind(billable_value(billable.cache_write_tokens))
+    .bind(billable_value(billable.cache_write_5m_tokens))
+    .bind(billable_value(billable.cache_write_1h_tokens))
+    .bind(billable_value(billable.image_input_tokens))
+    .bind(billable_value(billable.image_output_tokens))
+    .bind(entry.service_tier.as_deref())
     .bind(usage_json.as_deref())
     .bind(entry.upstream_request_id.as_deref())
     .bind(entry.request_headers.as_deref())
@@ -389,9 +446,11 @@ fn to_i64_u64(value: u64) -> i64 {
 mod tests {
     use super::*;
     use crate::proxy::pricing::{
-        save_model_pricing_settings, ModelPricingModel, ModelPricingSettingsInput, ModelPricingTier,
+        save_model_pricing_settings, BillableUsage, ModelPricingModel, ModelPricingProfile,
+        ModelPricingSettingsInput,
     };
     use sqlx::{sqlite::SqlitePoolOptions, Row};
+    use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
 
     fn test_log_context(
@@ -507,7 +566,13 @@ mod tests {
                     output_tokens: Some(10_000),
                     total_tokens: Some(1_010_000),
                 }),
-                cached_tokens: Some(200_000),
+                billable_usage: BillableUsage {
+                    uncached_input_tokens: 800_000,
+                    cache_read_tokens: 200_000,
+                    output_tokens: 10_000,
+                    ..BillableUsage::default()
+                },
+                service_tier: None,
                 usage_json: None,
             },
             None,
@@ -518,7 +583,7 @@ mod tests {
         assert_eq!(entry.pricing_context_tier.as_deref(), Some("long"));
         assert_eq!(
             entry.pricing_version,
-            crate::proxy::pricing::DEFAULT_PRICING_VERSION
+            default_model_pricing_settings().version
         );
     }
 
@@ -539,13 +604,15 @@ mod tests {
                     model_id: "custom-model".to_string(),
                     aliases: vec!["openai/custom-model".to_string()],
                     price_multiplier_scaled: crate::proxy::pricing::PRICE_MULTIPLIER_SCALE,
-                    short: ModelPricingTier {
-                        input_nano_usd_per_token: 100,
-                        cached_input_nano_usd_per_token: 10,
-                        output_nano_usd_per_token: 200,
+                    standard: ModelPricingProfile {
+                        input_nano_usd_per_token: Some(100),
+                        cache_read_nano_usd_per_token: Some(10),
+                        cache_write_nano_usd_per_token: Some(125),
+                        output_nano_usd_per_token: Some(200),
+                        ..ModelPricingProfile::default()
                     },
-                    long: None,
-                    long_context_input_token_threshold: None,
+                    service_tier_profiles: BTreeMap::new(),
+                    long_context: None,
                 }],
             },
         )
@@ -576,7 +643,14 @@ mod tests {
                     output_tokens: Some(10),
                     total_tokens: Some(110),
                 }),
-                cached_tokens: Some(20),
+                billable_usage: BillableUsage {
+                    uncached_input_tokens: 75,
+                    cache_read_tokens: 20,
+                    cache_write_tokens: 5,
+                    output_tokens: 10,
+                    ..BillableUsage::default()
+                },
+                service_tier: None,
                 usage_json: None,
             },
             None,
@@ -594,7 +668,7 @@ mod tests {
             row.try_get::<String, _>("client_ip").ok().as_deref(),
             Some("198.51.100.10")
         );
-        assert_eq!(row.try_get::<i64, _>("cost_nano_usd").ok(), Some(10_200));
+        assert_eq!(row.try_get::<i64, _>("cost_nano_usd").ok(), Some(10_325));
         assert_eq!(
             row.try_get::<String, _>("pricing_version").ok().as_deref(),
             Some(snapshot.settings.version.as_str())

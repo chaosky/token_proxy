@@ -12,6 +12,13 @@ export type DashboardSummary = {
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
+  uncachedInputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  cacheWrite5mTokens?: number;
+  cacheWrite1hTokens?: number;
+  imageInputTokens?: number;
+  imageOutputTokens?: number;
   avgLatencyMs: number;
   medianLatencyMs: number;
 };
@@ -21,6 +28,13 @@ export type DashboardProviderStat = {
   requests: number;
   totalTokens: number;
   cachedTokens: number;
+  uncachedInputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  cacheWrite5mTokens?: number;
+  cacheWrite1hTokens?: number;
+  imageInputTokens?: number;
+  imageOutputTokens?: number;
 };
 
 export type DashboardUpstreamOption = {
@@ -28,6 +42,13 @@ export type DashboardUpstreamOption = {
   requests: number;
   totalTokens: number;
   cachedTokens: number;
+  uncachedInputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  cacheWrite5mTokens?: number;
+  cacheWrite1hTokens?: number;
+  imageInputTokens?: number;
+  imageOutputTokens?: number;
 };
 
 export type DashboardAccountOption = {
@@ -36,6 +57,13 @@ export type DashboardAccountOption = {
   requests: number;
   totalTokens: number;
   cachedTokens: number;
+  uncachedInputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  cacheWrite5mTokens?: number;
+  cacheWrite1hTokens?: number;
+  imageInputTokens?: number;
+  imageOutputTokens?: number;
 };
 
 export type DashboardUpstreamModelProbeStatus =
@@ -61,6 +89,13 @@ export type DashboardSeriesPoint = {
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
+  uncachedInputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  cacheWrite5mTokens?: number;
+  cacheWrite1hTokens?: number;
+  imageInputTokens?: number;
+  imageOutputTokens?: number;
   totalTokens: number;
 };
 
@@ -79,6 +114,14 @@ export type DashboardRequestItem = {
   totalTokens: number | null;
   outputTokens: number | null;
   cachedTokens: number | null;
+  uncachedInputTokens?: number | null;
+  cacheReadTokens?: number | null;
+  cacheWriteTokens?: number | null;
+  cacheWrite5mTokens?: number | null;
+  cacheWrite1hTokens?: number | null;
+  imageInputTokens?: number | null;
+  imageOutputTokens?: number | null;
+  serviceTier?: string | null;
   costNanoUsd: number | null;
   pricingVersion: string | null;
   pricingModel: string | null;

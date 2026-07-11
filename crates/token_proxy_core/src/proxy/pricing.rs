@@ -1,23 +1,52 @@
+use reqwest::header::{ETAG, IF_NONE_MATCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::OnceLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub const DEFAULT_PRICING_VERSION: &str = "2026-07-10.grok-composer";
-// Multiplier is stored as a fixed-point decimal: 1_000_000_000_000 = 1x.
+use crate::oauth_util::build_reqwest_client;
+
 pub const PRICE_MULTIPLIER_SCALE: u64 = 1_000_000_000_000;
+pub const REMOTE_PRICING_CATALOG_URL: &str =
+    "https://raw.githubusercontent.com/mxyhi/token_proxy/main/crates/token_proxy_core/resources/model-pricing.json";
 
-const DEFAULT_LONG_CONTEXT_INPUT_TOKEN_THRESHOLD: u64 = 272_000;
+const BUNDLED_PRICING_CATALOG: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/resources/model-pricing.json"
+));
 const SETTINGS_ROW_ID: i64 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct ModelPricingTier {
-    pub input_nano_usd_per_token: u64,
-    pub cached_input_nano_usd_per_token: u64,
-    pub output_nano_usd_per_token: u64,
+pub struct PricingSource {
+    pub url: String,
+    pub commit: String,
+    pub sha256: String,
+    pub commit_time: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPricingProfile {
+    pub input_nano_usd_per_token: Option<u64>,
+    pub output_nano_usd_per_token: Option<u64>,
+    pub cache_read_nano_usd_per_token: Option<u64>,
+    pub cache_write_nano_usd_per_token: Option<u64>,
+    pub cache_write_5m_nano_usd_per_token: Option<u64>,
+    pub cache_write_1h_nano_usd_per_token: Option<u64>,
+    pub image_input_nano_usd_per_token: Option<u64>,
+    pub image_output_nano_usd_per_token: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LongContextPricing {
+    pub threshold: u64,
+    pub input_multiplier_scaled: u64,
+    pub output_multiplier_scaled: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,15 +56,17 @@ pub struct ModelPricingModel {
     pub aliases: Vec<String>,
     #[serde(default = "default_price_multiplier_scaled")]
     pub price_multiplier_scaled: u64,
-    pub short: ModelPricingTier,
-    pub long: Option<ModelPricingTier>,
-    pub long_context_input_token_threshold: Option<u64>,
+    pub standard: ModelPricingProfile,
+    #[serde(default)]
+    pub service_tier_profiles: BTreeMap<String, ModelPricingProfile>,
+    pub long_context: Option<LongContextPricing>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelPricingSettings {
     pub version: String,
+    pub source: Option<PricingSource>,
     pub models: Vec<ModelPricingModel>,
 }
 
@@ -52,18 +83,83 @@ pub struct ModelPricingSettingsSnapshot {
     pub default_settings: ModelPricingSettings,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct PricingCatalog {
+    schema_version: u32,
+    version: String,
+    source: PricingSource,
+    models: Vec<ModelPricingModel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+struct ModelPricingOverrides {
+    upserts: Vec<ModelPricingModel>,
+    deleted_model_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PricingContextTier {
-    Short,
+    Standard,
     Long,
 }
 
 impl PricingContextTier {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::Short => "short",
+            Self::Standard => "standard",
             Self::Long => "long",
         }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BillableUsage {
+    pub(crate) uncached_input_tokens: u64,
+    pub(crate) cache_read_tokens: u64,
+    pub(crate) cache_write_tokens: u64,
+    pub(crate) cache_write_5m_tokens: u64,
+    pub(crate) cache_write_1h_tokens: u64,
+    pub(crate) output_tokens: u64,
+    pub(crate) image_input_tokens: u64,
+    pub(crate) image_output_tokens: u64,
+}
+
+impl BillableUsage {
+    pub(crate) fn total_input_tokens(&self) -> u64 {
+        self.uncached_input_tokens
+            .saturating_add(self.cache_read_tokens)
+            .saturating_add(self.cache_write_tokens)
+            .saturating_add(self.cache_write_5m_tokens)
+            .saturating_add(self.cache_write_1h_tokens)
+            .saturating_add(self.image_input_tokens)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RequestCostBreakdown {
+    pub(crate) uncached_input_nano_usd: u64,
+    pub(crate) cache_read_nano_usd: u64,
+    pub(crate) cache_write_nano_usd: u64,
+    pub(crate) cache_write_5m_nano_usd: u64,
+    pub(crate) cache_write_1h_nano_usd: u64,
+    pub(crate) output_nano_usd: u64,
+    pub(crate) image_input_nano_usd: u64,
+    pub(crate) image_output_nano_usd: u64,
+}
+
+impl RequestCostBreakdown {
+    fn total(&self) -> u64 {
+        self.uncached_input_nano_usd
+            .saturating_add(self.cache_read_nano_usd)
+            .saturating_add(self.cache_write_nano_usd)
+            .saturating_add(self.cache_write_5m_nano_usd)
+            .saturating_add(self.cache_write_1h_nano_usd)
+            .saturating_add(self.output_nano_usd)
+            .saturating_add(self.image_input_nano_usd)
+            .saturating_add(self.image_output_nano_usd)
     }
 }
 
@@ -72,452 +168,26 @@ pub(crate) struct RequestCost {
     pub(crate) cost_nano_usd: u64,
     pub(crate) pricing_version: String,
     pub(crate) pricing_model: String,
+    pub(crate) service_tier: String,
     pub(crate) context_tier: PricingContextTier,
+    pub(crate) breakdown: RequestCostBreakdown,
 }
 
-fn alias_list(items: &[&str]) -> Vec<String> {
-    items.iter().map(|item| (*item).to_string()).collect()
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteCatalogRefresh {
+    Updated,
+    NotModified,
 }
+
+static BUNDLED_SETTINGS: OnceLock<ModelPricingSettings> = OnceLock::new();
 
 pub fn default_model_pricing_settings() -> ModelPricingSettings {
-    ModelPricingSettings {
-        version: DEFAULT_PRICING_VERSION.to_string(),
-        models: vec![
-            // Default ids stay providerless; aliases keep common provider and spelling variants visible.
-            // GPT-5.6 Sol/Terra/Luna share the sub2api v0.1.146 GPT-5.6 pricing tiers.
-            ModelPricingModel {
-                model_id: "gpt-5.6-sol".to_string(),
-                aliases: alias_list(&["openai/gpt-5.6-sol"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 5_000,
-                    cached_input_nano_usd_per_token: 500,
-                    output_nano_usd_per_token: 30_000,
-                },
-                long: Some(ModelPricingTier {
-                    input_nano_usd_per_token: 10_000,
-                    cached_input_nano_usd_per_token: 1_000,
-                    output_nano_usd_per_token: 45_000,
-                }),
-                long_context_input_token_threshold: Some(
-                    DEFAULT_LONG_CONTEXT_INPUT_TOKEN_THRESHOLD,
-                ),
-            },
-            ModelPricingModel {
-                model_id: "gpt-5.6-terra".to_string(),
-                aliases: alias_list(&["openai/gpt-5.6-terra"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 5_000,
-                    cached_input_nano_usd_per_token: 500,
-                    output_nano_usd_per_token: 30_000,
-                },
-                long: Some(ModelPricingTier {
-                    input_nano_usd_per_token: 10_000,
-                    cached_input_nano_usd_per_token: 1_000,
-                    output_nano_usd_per_token: 45_000,
-                }),
-                long_context_input_token_threshold: Some(
-                    DEFAULT_LONG_CONTEXT_INPUT_TOKEN_THRESHOLD,
-                ),
-            },
-            ModelPricingModel {
-                model_id: "gpt-5.6-luna".to_string(),
-                aliases: alias_list(&["openai/gpt-5.6-luna"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 5_000,
-                    cached_input_nano_usd_per_token: 500,
-                    output_nano_usd_per_token: 30_000,
-                },
-                long: Some(ModelPricingTier {
-                    input_nano_usd_per_token: 10_000,
-                    cached_input_nano_usd_per_token: 1_000,
-                    output_nano_usd_per_token: 45_000,
-                }),
-                long_context_input_token_threshold: Some(
-                    DEFAULT_LONG_CONTEXT_INPUT_TOKEN_THRESHOLD,
-                ),
-            },
-            ModelPricingModel {
-                model_id: "gpt-5.5-pro".to_string(),
-                aliases: alias_list(&["openai/gpt-5.5-pro"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 5_000,
-                    cached_input_nano_usd_per_token: 500,
-                    output_nano_usd_per_token: 30_000,
-                },
-                long: Some(ModelPricingTier {
-                    input_nano_usd_per_token: 10_000,
-                    cached_input_nano_usd_per_token: 1_000,
-                    output_nano_usd_per_token: 45_000,
-                }),
-                long_context_input_token_threshold: Some(
-                    DEFAULT_LONG_CONTEXT_INPUT_TOKEN_THRESHOLD,
-                ),
-            },
-            ModelPricingModel {
-                model_id: "gpt-5.5".to_string(),
-                aliases: alias_list(&["openai/gpt-5.5", "gpt-5.5-latest"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 5_000,
-                    cached_input_nano_usd_per_token: 500,
-                    output_nano_usd_per_token: 30_000,
-                },
-                long: Some(ModelPricingTier {
-                    input_nano_usd_per_token: 10_000,
-                    cached_input_nano_usd_per_token: 1_000,
-                    output_nano_usd_per_token: 45_000,
-                }),
-                long_context_input_token_threshold: Some(
-                    DEFAULT_LONG_CONTEXT_INPUT_TOKEN_THRESHOLD,
-                ),
-            },
-            ModelPricingModel {
-                model_id: "gpt-5.4".to_string(),
-                aliases: alias_list(&["openai/gpt-5.4"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 2_500,
-                    cached_input_nano_usd_per_token: 250,
-                    output_nano_usd_per_token: 15_000,
-                },
-                long: Some(ModelPricingTier {
-                    input_nano_usd_per_token: 5_000,
-                    cached_input_nano_usd_per_token: 500,
-                    output_nano_usd_per_token: 22_500,
-                }),
-                long_context_input_token_threshold: Some(
-                    DEFAULT_LONG_CONTEXT_INPUT_TOKEN_THRESHOLD,
-                ),
-            },
-            ModelPricingModel {
-                model_id: "gpt-5.4-mini".to_string(),
-                aliases: alias_list(&["openai/gpt-5.4-mini"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 750,
-                    cached_input_nano_usd_per_token: 75,
-                    output_nano_usd_per_token: 4_500,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            // Pricing snapshot sourced from official vendor pages where available, plus OpenRouter for catalog-only models.
-            // Claude Sonnet 5 introductory price through 2026-08-31 is $2 input, $0.20 cache hit, and $10 output per 1M tokens.
-            ModelPricingModel {
-                model_id: "claude-sonnet-5".to_string(),
-                aliases: alias_list(&["anthropic/claude-sonnet-5"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 2_000,
-                    cached_input_nano_usd_per_token: 200,
-                    output_nano_usd_per_token: 10_000,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            // Claude Fable 5 list price is $10 input, $1 cache hit, and $50 output per 1M tokens.
-            ModelPricingModel {
-                model_id: "claude-fable-5".to_string(),
-                aliases: alias_list(&["anthropic/claude-fable-5"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 10_000,
-                    cached_input_nano_usd_per_token: 1_000,
-                    output_nano_usd_per_token: 50_000,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            ModelPricingModel {
-                model_id: "claude-sonnet-4.6".to_string(),
-                aliases: alias_list(&["anthropic/claude-sonnet-4.6"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 3_000,
-                    cached_input_nano_usd_per_token: 300,
-                    output_nano_usd_per_token: 15_000,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            // Claude Opus 4.8 shares Opus 4.7 list pricing ($5 / $0.5 cached / $25 per million tokens).
-            ModelPricingModel {
-                model_id: "claude-opus-4-8".to_string(),
-                aliases: alias_list(&[
-                    "claude-opus-4.8",
-                    "opus-4-8",
-                    "anthropic/claude-opus-4-8",
-                    "anthropic/claude-opus-4.8",
-                ]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 5_000,
-                    cached_input_nano_usd_per_token: 500,
-                    output_nano_usd_per_token: 25_000,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            ModelPricingModel {
-                model_id: "claude-opus-4-7".to_string(),
-                aliases: alias_list(&[
-                    "claude-opus-4.7",
-                    "opus-4-7",
-                    "anthropic/claude-opus-4-7",
-                    "anthropic/claude-opus-4.7",
-                ]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 5_000,
-                    cached_input_nano_usd_per_token: 500,
-                    output_nano_usd_per_token: 25_000,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            ModelPricingModel {
-                model_id: "gemini-3-flash-preview".to_string(),
-                aliases: alias_list(&[
-                    "google/gemini-3-flash-preview",
-                    "models/gemini-3-flash-preview",
-                ]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 500,
-                    cached_input_nano_usd_per_token: 50,
-                    output_nano_usd_per_token: 3_000,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            ModelPricingModel {
-                model_id: "gemini-3.5-flash".to_string(),
-                aliases: alias_list(&["google/gemini-3.5-flash", "models/gemini-3.5-flash"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 1_500,
-                    cached_input_nano_usd_per_token: 150,
-                    output_nano_usd_per_token: 9_000,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            ModelPricingModel {
-                model_id: "deepseek-v4-flash".to_string(),
-                aliases: alias_list(&["deepseek/deepseek-v4-flash"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 140,
-                    cached_input_nano_usd_per_token: 3,
-                    output_nano_usd_per_token: 280,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            ModelPricingModel {
-                model_id: "deepseek-v4-pro".to_string(),
-                aliases: alias_list(&["deepseek/deepseek-v4-pro"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 435,
-                    cached_input_nano_usd_per_token: 4,
-                    output_nano_usd_per_token: 870,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            ModelPricingModel {
-                model_id: "gpt-5.3-codex".to_string(),
-                aliases: alias_list(&["openai/gpt-5.3-codex"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 1_750,
-                    cached_input_nano_usd_per_token: 175,
-                    output_nano_usd_per_token: 14_000,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            ModelPricingModel {
-                model_id: "gpt-5.2".to_string(),
-                aliases: alias_list(&["openai/gpt-5.2"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 1_750,
-                    cached_input_nano_usd_per_token: 175,
-                    output_nano_usd_per_token: 14_000,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            ModelPricingModel {
-                model_id: "gpt-5.2-codex".to_string(),
-                aliases: alias_list(&["openai/gpt-5.2-codex"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 1_750,
-                    cached_input_nano_usd_per_token: 175,
-                    output_nano_usd_per_token: 14_000,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            ModelPricingModel {
-                model_id: "kimi-k2.6".to_string(),
-                aliases: alias_list(&["moonshotai/kimi-k2.6"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 750,
-                    cached_input_nano_usd_per_token: 150,
-                    output_nano_usd_per_token: 3_500,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            // Z.AI lists GLM-5.2 text pricing as $1.4 input, $0.26 cached input, and $4.4 output per 1M tokens.
-            ModelPricingModel {
-                model_id: "glm-5.2".to_string(),
-                aliases: alias_list(&["z-ai/glm-5.2"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 1_400,
-                    cached_input_nano_usd_per_token: 260,
-                    output_nano_usd_per_token: 4_400,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            // xAI / OpenRouter (2026-07): grok-4.5 $2 / $0.50 cached / $6 per 1M tokens.
-            // grok-4.5-high is a reasoning-effort alias with the same list price.
-            ModelPricingModel {
-                model_id: "grok-4.5".to_string(),
-                aliases: alias_list(&[
-                    "grok-4.5-high",
-                    "x-ai/grok-4.5",
-                    "xai/grok-4.5",
-                    "x-ai/grok-4.5-high",
-                    "xai/grok-4.5-high",
-                ]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 2_000,
-                    cached_input_nano_usd_per_token: 500,
-                    output_nano_usd_per_token: 6_000,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            // xAI / OpenRouter: grok-4.3 $1.25 / $0.20 cached / $2.50 per 1M tokens.
-            ModelPricingModel {
-                model_id: "grok-4.3".to_string(),
-                aliases: alias_list(&["x-ai/grok-4.3", "xai/grok-4.3"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 1_250,
-                    cached_input_nano_usd_per_token: 200,
-                    output_nano_usd_per_token: 2_500,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            // xAI Chat API lists grok-4.20-0309-reasoning / non-reasoning; OpenRouter uses grok-4.20.
-            // Same tier: $1.25 / $0.20 cached / $2.50 per 1M tokens.
-            ModelPricingModel {
-                model_id: "grok-4.20".to_string(),
-                aliases: alias_list(&[
-                    "grok-4.20-0309",
-                    "grok-4.20-0309-reasoning",
-                    "grok-4.20-0309-non-reasoning",
-                    "x-ai/grok-4.20",
-                    "xai/grok-4.20",
-                    "x-ai/grok-4.20-0309",
-                    "xai/grok-4.20-0309",
-                    "x-ai/grok-4.20-0309-reasoning",
-                    "xai/grok-4.20-0309-reasoning",
-                    "x-ai/grok-4.20-0309-non-reasoning",
-                    "xai/grok-4.20-0309-non-reasoning",
-                ]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 1_250,
-                    cached_input_nano_usd_per_token: 200,
-                    output_nano_usd_per_token: 2_500,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            // xAI lists grok-4.20-multi-agent-0309; OpenRouter uses grok-4.20-multi-agent.
-            // Same tier: $1.25 / $0.20 cached / $2.50 per 1M tokens.
-            ModelPricingModel {
-                model_id: "grok-4.20-multi-agent".to_string(),
-                aliases: alias_list(&[
-                    "grok-4.20-multi-agent-0309",
-                    "x-ai/grok-4.20-multi-agent",
-                    "xai/grok-4.20-multi-agent",
-                    "x-ai/grok-4.20-multi-agent-0309",
-                    "xai/grok-4.20-multi-agent-0309",
-                ]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 1_250,
-                    cached_input_nano_usd_per_token: 200,
-                    output_nano_usd_per_token: 2_500,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            // xAI Code API / OpenRouter: grok-build-0.1 $1 / $0.20 cached / $2 per 1M tokens.
-            ModelPricingModel {
-                model_id: "grok-build-0.1".to_string(),
-                aliases: alias_list(&["x-ai/grok-build-0.1", "xai/grok-build-0.1"]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 1_000,
-                    cached_input_nano_usd_per_token: 200,
-                    output_nano_usd_per_token: 2_000,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            // Composer 2.5 Fast is the Grok Build coding surface; same list price as grok-build-0.1.
-            ModelPricingModel {
-                model_id: "grok-composer-2.5-fast".to_string(),
-                aliases: alias_list(&[
-                    "composer-2.5",
-                    "x-ai/grok-composer-2.5-fast",
-                    "xai/grok-composer-2.5-fast",
-                ]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 1_000,
-                    cached_input_nano_usd_per_token: 200,
-                    output_nano_usd_per_token: 2_000,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-            ModelPricingModel {
-                model_id: "gpt-image-2".to_string(),
-                aliases: alias_list(&[
-                    "openai/gpt-image-2",
-                    "gpt-image-2-2026-04-21",
-                    "openai/gpt-image-2-2026-04-21",
-                ]),
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 8_000,
-                    cached_input_nano_usd_per_token: 2_000,
-                    output_nano_usd_per_token: 30_000,
-                },
-                long: None,
-                long_context_input_token_threshold: None,
-            },
-        ],
-    }
+    BUNDLED_SETTINGS
+        .get_or_init(|| {
+            parse_catalog(BUNDLED_PRICING_CATALOG)
+                .expect("bundled model pricing catalog must be valid")
+        })
+        .clone()
 }
 
 pub fn default_model_pricing_settings_snapshot() -> ModelPricingSettingsSnapshot {
@@ -531,55 +201,43 @@ pub fn default_model_pricing_settings_snapshot() -> ModelPricingSettingsSnapshot
 pub async fn init_model_pricing_table(pool: &SqlitePool) -> Result<(), String> {
     sqlx::query(
         r#"
-CREATE TABLE IF NOT EXISTS model_pricing_settings (
+CREATE TABLE IF NOT EXISTS model_pricing_catalog_cache (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   version TEXT NOT NULL,
-  models_json TEXT NOT NULL,
+  catalog_json TEXT NOT NULL,
+  etag TEXT,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS model_pricing_overrides (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  overrides_json TEXT NOT NULL,
   updated_at_ms INTEGER NOT NULL
 );
 "#,
     )
     .execute(pool)
     .await
-    .map_err(|err| format!("Failed to create model_pricing_settings table: {err}"))?;
+    .map_err(|err| format!("Failed to create model pricing tables: {err}"))?;
     Ok(())
 }
 
 pub async fn read_model_pricing_settings_snapshot(
     pool: &SqlitePool,
 ) -> Result<ModelPricingSettingsSnapshot, String> {
-    let settings = read_model_pricing_settings(pool).await?;
+    let default_settings = read_catalog_settings(pool).await?;
+    let settings = read_effective_settings(pool, &default_settings).await?;
     Ok(ModelPricingSettingsSnapshot {
         settings,
-        default_settings: default_model_pricing_settings(),
+        default_settings,
     })
 }
 
 pub async fn read_model_pricing_settings(
     pool: &SqlitePool,
 ) -> Result<ModelPricingSettings, String> {
-    init_model_pricing_table(pool).await?;
-    let row = sqlx::query(
-        r#"
-SELECT models_json
-FROM model_pricing_settings
-WHERE id = ?;
-"#,
-    )
-    .bind(SETTINGS_ROW_ID)
-    .fetch_optional(pool)
-    .await
-    .map_err(|err| format!("Failed to read model pricing settings: {err}"))?;
-
-    let Some(row) = row else {
-        return Ok(default_model_pricing_settings());
-    };
-    let models_json = row
-        .try_get::<String, _>("models_json")
-        .map_err(|err| format!("Failed to decode model pricing settings: {err}"))?;
-    let models = serde_json::from_str::<Vec<ModelPricingModel>>(&models_json)
-        .map_err(|err| format!("Failed to parse model pricing settings: {err}"))?;
-    normalize_model_pricing_settings(ModelPricingSettingsInput { models })
+    let catalog = read_catalog_settings(pool).await?;
+    read_effective_settings(pool, &catalog).await
 }
 
 pub async fn save_model_pricing_settings(
@@ -587,50 +245,130 @@ pub async fn save_model_pricing_settings(
     input: ModelPricingSettingsInput,
 ) -> Result<ModelPricingSettingsSnapshot, String> {
     init_model_pricing_table(pool).await?;
-    let settings = normalize_model_pricing_settings(input)?;
-    if settings.models == default_model_pricing_settings().models {
-        sqlx::query("DELETE FROM model_pricing_settings WHERE id = ?;")
+    let catalog = read_catalog_settings(pool).await?;
+    let normalized = normalize_models(input.models)?;
+    let overrides = diff_overrides(&catalog.models, &normalized);
+    if overrides == ModelPricingOverrides::default() {
+        sqlx::query("DELETE FROM model_pricing_overrides WHERE id = ?;")
             .bind(SETTINGS_ROW_ID)
             .execute(pool)
             .await
-            .map_err(|err| format!("Failed to reset default model pricing settings: {err}"))?;
+            .map_err(|err| format!("Failed to reset model pricing overrides: {err}"))?;
     } else {
-        let models_json = serde_json::to_string(&settings.models)
-            .map_err(|err| format!("Failed to serialize model pricing settings: {err}"))?;
+        let overrides_json = serde_json::to_string(&overrides)
+            .map_err(|err| format!("Failed to serialize model pricing overrides: {err}"))?;
         sqlx::query(
             r#"
-INSERT INTO model_pricing_settings (id, version, models_json, updated_at_ms)
-VALUES (?, ?, ?, ?)
+INSERT INTO model_pricing_overrides (id, overrides_json, updated_at_ms)
+VALUES (?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
-  version = excluded.version,
-  models_json = excluded.models_json,
+  overrides_json = excluded.overrides_json,
   updated_at_ms = excluded.updated_at_ms;
 "#,
         )
         .bind(SETTINGS_ROW_ID)
-        .bind(&settings.version)
-        .bind(models_json)
+        .bind(overrides_json)
         .bind(now_ms_i64())
         .execute(pool)
         .await
-        .map_err(|err| format!("Failed to save model pricing settings: {err}"))?;
+        .map_err(|err| format!("Failed to save model pricing overrides: {err}"))?;
     }
+    let settings = effective_settings(&catalog, &overrides)?;
     backfill_request_log_costs_with_settings(pool, &settings).await?;
-    read_model_pricing_settings_snapshot(pool).await
+    Ok(ModelPricingSettingsSnapshot {
+        settings,
+        default_settings: catalog,
+    })
 }
 
 pub async fn reset_model_pricing_settings(
     pool: &SqlitePool,
 ) -> Result<ModelPricingSettingsSnapshot, String> {
     init_model_pricing_table(pool).await?;
-    sqlx::query("DELETE FROM model_pricing_settings WHERE id = ?;")
+    sqlx::query("DELETE FROM model_pricing_overrides WHERE id = ?;")
         .bind(SETTINGS_ROW_ID)
         .execute(pool)
         .await
-        .map_err(|err| format!("Failed to reset model pricing settings: {err}"))?;
-    let settings = default_model_pricing_settings();
+        .map_err(|err| format!("Failed to reset model pricing overrides: {err}"))?;
+    let settings = read_catalog_settings(pool).await?;
     backfill_request_log_costs_with_settings(pool, &settings).await?;
-    read_model_pricing_settings_snapshot(pool).await
+    Ok(ModelPricingSettingsSnapshot {
+        settings: settings.clone(),
+        default_settings: settings,
+    })
+}
+
+pub async fn refresh_remote_model_pricing_catalog(
+    pool: &SqlitePool,
+    proxy_url: Option<&str>,
+) -> Result<RemoteCatalogRefresh, String> {
+    refresh_remote_model_pricing_catalog_from_url(pool, proxy_url, REMOTE_PRICING_CATALOG_URL).await
+}
+
+async fn refresh_remote_model_pricing_catalog_from_url(
+    pool: &SqlitePool,
+    proxy_url: Option<&str>,
+    url: &str,
+) -> Result<RemoteCatalogRefresh, String> {
+    init_model_pricing_table(pool).await?;
+    let etag = sqlx::query("SELECT etag FROM model_pricing_catalog_cache WHERE id = ?;")
+        .bind(SETTINGS_ROW_ID)
+        .fetch_optional(pool)
+        .await
+        .map_err(|err| format!("Failed to read model pricing catalog ETag: {err}"))?
+        .and_then(|row| row.try_get::<Option<String>, _>("etag").ok().flatten());
+    let client = build_reqwest_client(proxy_url, Duration::from_secs(15))?;
+    let mut request = client.get(url);
+    if let Some(etag) = etag.as_deref() {
+        request = request.header(IF_NONE_MATCH, etag);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("Failed to refresh model pricing catalog: {err}"))?;
+    if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+        tracing::debug!(url, "model pricing catalog not modified");
+        return Ok(RemoteCatalogRefresh::NotModified);
+    }
+    if !response.status().is_success() {
+        return Err(format!(
+            "Model pricing catalog returned HTTP {}.",
+            response.status()
+        ));
+    }
+    let response_etag = response
+        .headers()
+        .get(ETAG)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let catalog_json = response
+        .text()
+        .await
+        .map_err(|err| format!("Failed to read model pricing catalog: {err}"))?;
+    let settings = parse_catalog(&catalog_json)?;
+    sqlx::query(
+        r#"
+INSERT INTO model_pricing_catalog_cache (id, version, catalog_json, etag, updated_at_ms)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+  version = excluded.version,
+  catalog_json = excluded.catalog_json,
+  etag = excluded.etag,
+  updated_at_ms = excluded.updated_at_ms;
+"#,
+    )
+    .bind(SETTINGS_ROW_ID)
+    .bind(&settings.version)
+    .bind(&catalog_json)
+    .bind(response_etag.as_deref())
+    .bind(now_ms_i64())
+    .execute(pool)
+    .await
+    .map_err(|err| format!("Failed to cache model pricing catalog: {err}"))?;
+    let effective = read_effective_settings(pool, &settings).await?;
+    backfill_request_log_costs_with_settings(pool, &effective).await?;
+    tracing::info!(version = %settings.version, url, "model pricing catalog updated");
+    Ok(RemoteCatalogRefresh::Updated)
 }
 
 pub(crate) async fn backfill_request_log_costs(pool: &SqlitePool) -> Result<(), String> {
@@ -642,131 +380,545 @@ pub(crate) fn calculate_request_cost(
     settings: &ModelPricingSettings,
     model: Option<&str>,
     mapped_model: Option<&str>,
-    input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
-    cached_tokens: Option<u64>,
+    service_tier: Option<&str>,
+    usage: &BillableUsage,
 ) -> Option<RequestCost> {
     let effective_model = mapped_model
         .and_then(non_empty)
         .or_else(|| model.and_then(non_empty))?;
-    let price = find_model_price(settings, effective_model)?;
-    let input_tokens = input_tokens?;
-    let output_tokens = output_tokens.unwrap_or(0);
-    let cached_tokens = cached_tokens.unwrap_or(0).min(input_tokens);
-    let uncached_input_tokens = input_tokens.saturating_sub(cached_tokens);
-    let has_long_tier = price.long.is_some();
-    let long_threshold = price
-        .long_context_input_token_threshold
-        .unwrap_or(DEFAULT_LONG_CONTEXT_INPUT_TOKEN_THRESHOLD);
-    let context_tier = if has_long_tier && input_tokens > long_threshold {
-        PricingContextTier::Long
-    } else {
-        PricingContextTier::Short
+    let model_price = find_model_price(settings, effective_model)?;
+    let normalized_service_tier = normalize_service_tier(service_tier);
+    let selected_profile = model_price
+        .service_tier_profiles
+        .get(normalized_service_tier.as_str());
+    let long_context = model_price
+        .long_context
+        .as_ref()
+        .filter(|long| usage.total_input_tokens() > long.threshold);
+    let input_long_multiplier = long_context
+        .map(|long| long.input_multiplier_scaled)
+        .unwrap_or(PRICE_MULTIPLIER_SCALE);
+    let output_long_multiplier = long_context
+        .map(|long| long.output_multiplier_scaled)
+        .unwrap_or(PRICE_MULTIPLIER_SCALE);
+    let profile = ResolvedProfile::new(&model_price.standard, selected_profile);
+
+    let mut breakdown = RequestCostBreakdown {
+        uncached_input_nano_usd: price_component(
+            usage.uncached_input_tokens,
+            profile.input(),
+            input_long_multiplier,
+        )?,
+        cache_read_nano_usd: price_component(
+            usage.cache_read_tokens,
+            profile.cache_read(),
+            input_long_multiplier,
+        )?,
+        cache_write_nano_usd: price_component(
+            usage.cache_write_tokens,
+            profile.cache_write(),
+            input_long_multiplier,
+        )?,
+        cache_write_5m_nano_usd: price_component(
+            usage.cache_write_5m_tokens,
+            profile.cache_write_5m(),
+            input_long_multiplier,
+        )?,
+        cache_write_1h_nano_usd: price_component(
+            usage.cache_write_1h_tokens,
+            profile.cache_write_1h(),
+            input_long_multiplier,
+        )?,
+        output_nano_usd: price_component(
+            usage.output_tokens,
+            profile.output(),
+            output_long_multiplier,
+        )?,
+        image_input_nano_usd: price_component(
+            usage.image_input_tokens,
+            profile.image_input(),
+            PRICE_MULTIPLIER_SCALE,
+        )?,
+        image_output_nano_usd: price_component(
+            usage.image_output_tokens,
+            profile.image_output(),
+            if profile.has_explicit_image_output() {
+                PRICE_MULTIPLIER_SCALE
+            } else {
+                output_long_multiplier
+            },
+        )?,
     };
-    let tier = match context_tier {
-        PricingContextTier::Long => price.long.as_ref().unwrap_or(&price.short),
-        PricingContextTier::Short => &price.short,
-    };
-    let input_nano_usd_per_token =
-        apply_price_multiplier(tier.input_nano_usd_per_token, price.price_multiplier_scaled);
-    let cached_input_nano_usd_per_token = apply_price_multiplier(
-        tier.cached_input_nano_usd_per_token,
-        price.price_multiplier_scaled,
-    );
-    let output_nano_usd_per_token = apply_price_multiplier(
-        tier.output_nano_usd_per_token,
-        price.price_multiplier_scaled,
-    );
+    apply_breakdown_multiplier(&mut breakdown, model_price.price_multiplier_scaled);
 
     Some(RequestCost {
-        cost_nano_usd: uncached_input_tokens
-            .saturating_mul(input_nano_usd_per_token)
-            .saturating_add(cached_tokens.saturating_mul(cached_input_nano_usd_per_token))
-            .saturating_add(output_tokens.saturating_mul(output_nano_usd_per_token)),
+        cost_nano_usd: breakdown.total(),
         pricing_version: settings.version.clone(),
-        pricing_model: price.model_id.clone(),
-        context_tier,
+        pricing_model: model_price.model_id.clone(),
+        service_tier: normalized_service_tier,
+        context_tier: if long_context.is_some() {
+            PricingContextTier::Long
+        } else {
+            PricingContextTier::Standard
+        },
+        breakdown,
     })
 }
 
-fn normalize_model_pricing_settings(
-    input: ModelPricingSettingsInput,
+struct ResolvedProfile<'a> {
+    standard: &'a ModelPricingProfile,
+    selected: Option<&'a ModelPricingProfile>,
+}
+
+impl<'a> ResolvedProfile<'a> {
+    fn new(standard: &'a ModelPricingProfile, selected: Option<&'a ModelPricingProfile>) -> Self {
+        Self { standard, selected }
+    }
+
+    fn input(&self) -> Option<u64> {
+        self.selected
+            .and_then(|profile| profile.input_nano_usd_per_token)
+            .or(self.standard.input_nano_usd_per_token)
+    }
+
+    fn output(&self) -> Option<u64> {
+        self.selected
+            .and_then(|profile| profile.output_nano_usd_per_token)
+            .or(self.standard.output_nano_usd_per_token)
+    }
+
+    fn cache_read(&self) -> Option<u64> {
+        self.selected
+            .and_then(|profile| profile.cache_read_nano_usd_per_token)
+            .or(self.standard.cache_read_nano_usd_per_token)
+    }
+
+    fn cache_write(&self) -> Option<u64> {
+        self.selected
+            .and_then(|profile| profile.cache_write_nano_usd_per_token)
+            .or(self.standard.cache_write_nano_usd_per_token)
+    }
+
+    fn cache_write_5m(&self) -> Option<u64> {
+        self.selected
+            .and_then(|profile| profile.cache_write_5m_nano_usd_per_token)
+            .or_else(|| {
+                self.selected
+                    .and_then(|profile| profile.cache_write_nano_usd_per_token)
+            })
+            .or(self.standard.cache_write_5m_nano_usd_per_token)
+            .or(self.standard.cache_write_nano_usd_per_token)
+    }
+
+    fn cache_write_1h(&self) -> Option<u64> {
+        self.selected
+            .and_then(|profile| profile.cache_write_1h_nano_usd_per_token)
+            .or_else(|| {
+                self.selected
+                    .and_then(|profile| profile.cache_write_nano_usd_per_token)
+            })
+            .or(self.standard.cache_write_1h_nano_usd_per_token)
+            .or(self.standard.cache_write_nano_usd_per_token)
+    }
+
+    fn image_input(&self) -> Option<u64> {
+        self.selected
+            .and_then(|profile| profile.image_input_nano_usd_per_token)
+            .or(self.standard.image_input_nano_usd_per_token)
+            .or_else(|| self.input())
+    }
+
+    fn image_output(&self) -> Option<u64> {
+        self.selected
+            .and_then(|profile| profile.image_output_nano_usd_per_token)
+            .or(self.standard.image_output_nano_usd_per_token)
+            .or_else(|| self.output())
+    }
+
+    fn has_explicit_image_output(&self) -> bool {
+        self.selected
+            .and_then(|profile| profile.image_output_nano_usd_per_token)
+            .or(self.standard.image_output_nano_usd_per_token)
+            .is_some()
+    }
+}
+
+fn parse_catalog(json: &str) -> Result<ModelPricingSettings, String> {
+    let catalog = serde_json::from_str::<PricingCatalog>(json)
+        .map_err(|err| format!("Failed to parse model pricing catalog: {err}"))?;
+    if catalog.schema_version != 1 {
+        return Err(format!(
+            "Unsupported model pricing schema version: {}",
+            catalog.schema_version
+        ));
+    }
+    if catalog.version.trim().is_empty() {
+        return Err("Model pricing catalog version is required.".to_string());
+    }
+    let models = normalize_models(catalog.models)?;
+    Ok(ModelPricingSettings {
+        version: catalog.version,
+        source: Some(catalog.source),
+        models,
+    })
+}
+
+async fn read_catalog_settings(pool: &SqlitePool) -> Result<ModelPricingSettings, String> {
+    init_model_pricing_table(pool).await?;
+    let row = sqlx::query("SELECT catalog_json FROM model_pricing_catalog_cache WHERE id = ?;")
+        .bind(SETTINGS_ROW_ID)
+        .fetch_optional(pool)
+        .await
+        .map_err(|err| format!("Failed to read cached model pricing catalog: {err}"))?;
+    let Some(row) = row else {
+        return Ok(default_model_pricing_settings());
+    };
+    let json = row
+        .try_get::<String, _>("catalog_json")
+        .map_err(|err| format!("Failed to decode cached model pricing catalog: {err}"))?;
+    match parse_catalog(&json) {
+        Ok(settings) => Ok(settings),
+        Err(err) => {
+            tracing::warn!(error = %err, "cached model pricing catalog invalid; using bundled fallback");
+            Ok(default_model_pricing_settings())
+        }
+    }
+}
+
+async fn read_effective_settings(
+    pool: &SqlitePool,
+    catalog: &ModelPricingSettings,
 ) -> Result<ModelPricingSettings, String> {
-    if input.models.is_empty() {
-        return Err("At least one model price is required.".to_string());
+    let row = sqlx::query("SELECT overrides_json FROM model_pricing_overrides WHERE id = ?;")
+        .bind(SETTINGS_ROW_ID)
+        .fetch_optional(pool)
+        .await
+        .map_err(|err| format!("Failed to read model pricing overrides: {err}"))?;
+    let overrides = match row {
+        Some(row) => {
+            let json = row
+                .try_get::<String, _>("overrides_json")
+                .map_err(|err| format!("Failed to decode model pricing overrides: {err}"))?;
+            serde_json::from_str::<ModelPricingOverrides>(&json)
+                .map_err(|err| format!("Failed to parse model pricing overrides: {err}"))?
+        }
+        None => ModelPricingOverrides::default(),
+    };
+    effective_settings(catalog, &overrides)
+}
+
+fn effective_settings(
+    catalog: &ModelPricingSettings,
+    overrides: &ModelPricingOverrides,
+) -> Result<ModelPricingSettings, String> {
+    let deleted: HashSet<String> = overrides
+        .deleted_model_ids
+        .iter()
+        .map(|model_id| normalize_model_alias(model_id))
+        .collect();
+    let normalized_upserts = if overrides.upserts.is_empty() {
+        Vec::new()
+    } else {
+        normalize_models(overrides.upserts.clone())?
+    };
+    let mut upserts: HashMap<String, ModelPricingModel> = normalized_upserts
+        .into_iter()
+        .map(|model| (normalize_model_alias(&model.model_id), model))
+        .collect();
+    let mut models = Vec::with_capacity(catalog.models.len() + upserts.len());
+    for model in &catalog.models {
+        let key = normalize_model_alias(&model.model_id);
+        if deleted.contains(&key) {
+            continue;
+        }
+        models.push(upserts.remove(&key).unwrap_or_else(|| model.clone()));
     }
-
-    let mut normalized_aliases = HashSet::new();
-    let mut models = Vec::with_capacity(input.models.len());
-    for model in input.models {
-        let model_id = model.model_id.trim();
-        if model_id.is_empty() {
-            return Err("Model id is required.".to_string());
-        }
-
-        let mut aliases = Vec::new();
-        let mut row_lookup_keys: HashSet<String> =
-            model_lookup_keys(model_id).into_iter().collect();
-        for alias in model.aliases {
-            let trimmed = alias.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let alias_lookup_keys = model_lookup_keys(trimmed);
-            let new_lookup_keys = alias_lookup_keys
-                .iter()
-                .filter(|lookup_key| !row_lookup_keys.contains(*lookup_key))
-                .cloned()
-                .collect::<Vec<_>>();
-            if new_lookup_keys.is_empty()
-                && normalize_model_alias(trimmed) == normalize_model_alias(model_id)
-            {
-                continue;
-            }
-            for lookup_key in new_lookup_keys {
-                row_lookup_keys.insert(lookup_key);
-            }
-            aliases.push(trimmed.to_string());
-        }
-        for lookup_key in row_lookup_keys {
-            if !normalized_aliases.insert(lookup_key.clone()) {
-                return Err(format!("Duplicate model pricing alias: {lookup_key}"));
-            }
-        }
-
-        let long_context_input_token_threshold = if model.long.is_some() {
-            Some(
-                model
-                    .long_context_input_token_threshold
-                    .unwrap_or(DEFAULT_LONG_CONTEXT_INPUT_TOKEN_THRESHOLD),
-            )
-        } else {
-            None
-        };
-        if model.price_multiplier_scaled == 0 {
-            return Err(format!(
-                "Price multiplier must be positive for model {model_id}"
-            ));
-        }
-
-        models.push(ModelPricingModel {
-            model_id: model_id.to_string(),
-            aliases,
-            price_multiplier_scaled: model.price_multiplier_scaled,
-            short: model.short,
-            long: model.long,
-            long_context_input_token_threshold,
-        });
-    }
-
-    let default_settings = default_model_pricing_settings();
-    let version = if models == default_settings.models {
-        DEFAULT_PRICING_VERSION.to_string()
+    models.extend(upserts.into_values());
+    let models = normalize_models(models)?;
+    let version = if overrides == &ModelPricingOverrides::default() {
+        catalog.version.clone()
     } else {
         pricing_version_for_models(&models)?
     };
+    Ok(ModelPricingSettings {
+        version,
+        source: catalog.source.clone(),
+        models,
+    })
+}
 
-    Ok(ModelPricingSettings { version, models })
+fn diff_overrides(
+    catalog: &[ModelPricingModel],
+    effective: &[ModelPricingModel],
+) -> ModelPricingOverrides {
+    let catalog_by_id: HashMap<String, &ModelPricingModel> = catalog
+        .iter()
+        .map(|model| (normalize_model_alias(&model.model_id), model))
+        .collect();
+    let effective_ids: HashSet<String> = effective
+        .iter()
+        .map(|model| normalize_model_alias(&model.model_id))
+        .collect();
+    let upserts = effective
+        .iter()
+        .filter(|model| {
+            catalog_by_id
+                .get(&normalize_model_alias(&model.model_id))
+                .is_none_or(|catalog_model| *catalog_model != *model)
+        })
+        .cloned()
+        .collect();
+    let deleted_model_ids = catalog
+        .iter()
+        .filter(|model| !effective_ids.contains(&normalize_model_alias(&model.model_id)))
+        .map(|model| model.model_id.clone())
+        .collect();
+    ModelPricingOverrides {
+        upserts,
+        deleted_model_ids,
+    }
+}
+
+fn normalize_models(models: Vec<ModelPricingModel>) -> Result<Vec<ModelPricingModel>, String> {
+    if models.is_empty() {
+        return Err("At least one model price is required.".to_string());
+    }
+    let mut lookup_keys = HashSet::new();
+    let mut normalized = Vec::with_capacity(models.len());
+    for mut model in models {
+        model.model_id = model.model_id.trim().to_string();
+        if model.model_id.is_empty() {
+            return Err("Model id is required.".to_string());
+        }
+        if model.price_multiplier_scaled == 0 {
+            return Err(format!(
+                "Price multiplier must be positive for model {}",
+                model.model_id
+            ));
+        }
+        if let Some(long) = model.long_context.as_ref() {
+            if long.threshold == 0
+                || long.input_multiplier_scaled == 0
+                || long.output_multiplier_scaled == 0
+            {
+                return Err(format!(
+                    "Long context threshold and multipliers must be positive for model {}",
+                    model.model_id
+                ));
+            }
+        }
+        let mut aliases = Vec::new();
+        let mut row_keys: HashSet<String> =
+            model_lookup_keys(&model.model_id).into_iter().collect();
+        for alias in model.aliases {
+            let alias = alias.trim();
+            if alias.is_empty() {
+                continue;
+            }
+            let alias_keys = model_lookup_keys(alias);
+            if alias_keys.iter().all(|key| row_keys.contains(key)) {
+                continue;
+            }
+            row_keys.extend(alias_keys);
+            aliases.push(alias.to_string());
+        }
+        for key in row_keys {
+            if !lookup_keys.insert(key.clone()) {
+                return Err(format!("Duplicate model pricing alias: {key}"));
+            }
+        }
+        model.aliases = aliases;
+        model.service_tier_profiles = model
+            .service_tier_profiles
+            .into_iter()
+            .map(|(tier, profile)| (normalize_service_tier(Some(&tier)), profile))
+            .collect();
+        normalized.push(model);
+    }
+    Ok(normalized)
+}
+
+async fn backfill_request_log_costs_with_settings(
+    pool: &SqlitePool,
+    settings: &ModelPricingSettings,
+) -> Result<(), String> {
+    let columns = sqlx::query("PRAGMA table_info(request_logs);")
+        .fetch_all(pool)
+        .await
+        .map_err(|err| format!("Failed to inspect request log pricing columns: {err}"))?;
+    let column_names: HashSet<String> = columns
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect();
+    if !column_names.contains("uncached_input_tokens") {
+        return Ok(());
+    }
+    let rows = sqlx::query(
+        r#"
+SELECT
+  id,
+  model,
+  mapped_model,
+  service_tier,
+  uncached_input_tokens,
+  cache_read_tokens,
+  cache_write_tokens,
+  cache_write_5m_tokens,
+  cache_write_1h_tokens,
+  output_tokens,
+  image_input_tokens,
+  image_output_tokens
+FROM request_logs
+WHERE pricing_version IS NULL OR pricing_version != ?;
+"#,
+    )
+    .bind(&settings.version)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| format!("Failed to read request log costs for backfill: {err}"))?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|err| format!("Failed to begin request log cost backfill transaction: {err}"))?;
+    for row in rows {
+        let id = row
+            .try_get::<i64, _>("id")
+            .map_err(|err| format!("Failed to decode request_logs.id: {err}"))?;
+        let usage = BillableUsage {
+            uncached_input_tokens: row_u64(&row, "uncached_input_tokens"),
+            cache_read_tokens: row_u64(&row, "cache_read_tokens"),
+            cache_write_tokens: row_u64(&row, "cache_write_tokens"),
+            cache_write_5m_tokens: row_u64(&row, "cache_write_5m_tokens"),
+            cache_write_1h_tokens: row_u64(&row, "cache_write_1h_tokens"),
+            output_tokens: row_u64(&row, "output_tokens"),
+            image_input_tokens: row_u64(&row, "image_input_tokens"),
+            image_output_tokens: row_u64(&row, "image_output_tokens"),
+        };
+        let model = row.try_get::<Option<String>, _>("model").ok().flatten();
+        let mapped_model = row
+            .try_get::<Option<String>, _>("mapped_model")
+            .ok()
+            .flatten();
+        let service_tier = row
+            .try_get::<Option<String>, _>("service_tier")
+            .ok()
+            .flatten();
+        let cost = calculate_request_cost(
+            settings,
+            model.as_deref(),
+            mapped_model.as_deref(),
+            service_tier.as_deref(),
+            &usage,
+        );
+        sqlx::query(
+            r#"
+UPDATE request_logs
+SET cost_nano_usd = ?, pricing_version = ?, pricing_model = ?, pricing_context_tier = ?
+WHERE id = ?;
+"#,
+        )
+        .bind(cost.as_ref().map(|cost| to_i64(cost.cost_nano_usd)))
+        .bind(&settings.version)
+        .bind(cost.as_ref().map(|cost| cost.pricing_model.as_str()))
+        .bind(cost.as_ref().map(|cost| cost.context_tier.as_str()))
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| format!("Failed to backfill request log cost for {id}: {err}"))?;
+    }
+    tx.commit()
+        .await
+        .map_err(|err| format!("Failed to commit request log cost backfill: {err}"))
+}
+
+fn price_component(tokens: u64, price: Option<u64>, multiplier_scaled: u64) -> Option<u64> {
+    if tokens == 0 {
+        return Some(0);
+    }
+    let adjusted_price = apply_scaled_multiplier(price?, multiplier_scaled);
+    Some(tokens.saturating_mul(adjusted_price))
+}
+
+fn apply_breakdown_multiplier(breakdown: &mut RequestCostBreakdown, multiplier_scaled: u64) {
+    for value in [
+        &mut breakdown.uncached_input_nano_usd,
+        &mut breakdown.cache_read_nano_usd,
+        &mut breakdown.cache_write_nano_usd,
+        &mut breakdown.cache_write_5m_nano_usd,
+        &mut breakdown.cache_write_1h_nano_usd,
+        &mut breakdown.output_nano_usd,
+        &mut breakdown.image_input_nano_usd,
+        &mut breakdown.image_output_nano_usd,
+    ] {
+        *value = apply_scaled_multiplier(*value, multiplier_scaled);
+    }
+}
+
+fn apply_scaled_multiplier(value: u64, multiplier_scaled: u64) -> u64 {
+    let numerator = (value as u128)
+        .saturating_mul(multiplier_scaled as u128)
+        .saturating_add((PRICE_MULTIPLIER_SCALE / 2) as u128);
+    u64::try_from(numerator / PRICE_MULTIPLIER_SCALE as u128).unwrap_or(u64::MAX)
+}
+
+fn default_price_multiplier_scaled() -> u64 {
+    PRICE_MULTIPLIER_SCALE
+}
+
+fn normalize_service_tier(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("standard")
+        .to_ascii_lowercase()
+}
+
+fn find_model_price<'a>(
+    settings: &'a ModelPricingSettings,
+    model: &str,
+) -> Option<&'a ModelPricingModel> {
+    let lookup_keys: HashSet<String> = model_lookup_keys(model).into_iter().collect();
+    settings.models.iter().find(|price| {
+        model_lookup_keys(&price.model_id)
+            .into_iter()
+            .any(|key| lookup_keys.contains(&key))
+            || price.aliases.iter().any(|alias| {
+                model_lookup_keys(alias)
+                    .into_iter()
+                    .any(|key| lookup_keys.contains(&key))
+            })
+    })
+}
+
+fn model_lookup_keys(model: &str) -> Vec<String> {
+    let normalized = normalize_model_alias(model);
+    let mut keys = Vec::new();
+    push_model_lookup_key(&mut keys, &normalized);
+    if let Some((_, suffix)) = normalized.split_once('/') {
+        push_model_lookup_key(&mut keys, suffix);
+    }
+    keys
+}
+
+fn push_model_lookup_key(keys: &mut Vec<String>, value: &str) {
+    let key = match value {
+        "claude-opus-4.8" => "claude-opus-4-8".to_string(),
+        "claude-opus-4.7" => "claude-opus-4-7".to_string(),
+        _ => value.to_string(),
+    };
+    if !key.is_empty() && !keys.contains(&key) {
+        keys.push(key);
+    }
+}
+
+fn normalize_model_alias(model: &str) -> String {
+    model
+        .trim()
+        .to_ascii_lowercase()
+        .replace(char::is_whitespace, "-")
 }
 
 fn pricing_version_for_models(models: &[ModelPricingModel]) -> Result<String, String> {
@@ -781,174 +933,17 @@ fn pricing_version_for_models(models: &[ModelPricingModel]) -> Result<String, St
     Ok(format!("custom.{suffix}"))
 }
 
-async fn backfill_request_log_costs_with_settings(
-    pool: &SqlitePool,
-    settings: &ModelPricingSettings,
-) -> Result<(), String> {
-    let rows = sqlx::query(
-        r#"
-SELECT
-  id,
-  model,
-  mapped_model,
-  input_tokens,
-  output_tokens,
-  cached_tokens
-FROM request_logs
-WHERE pricing_version IS NULL OR pricing_version != ?;
-"#,
-    )
-    .bind(&settings.version)
-    .fetch_all(pool)
-    .await
-    .map_err(|err| format!("Failed to read request log costs for backfill: {err}"))?;
-
-    if rows.is_empty() {
-        return Ok(());
-    }
-
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|err| format!("Failed to begin request log cost backfill transaction: {err}"))?;
-
-    for row in rows {
-        let id = row
-            .try_get::<i64, _>("id")
-            .map_err(|err| format!("Failed to decode request_logs.id: {err}"))?;
-        let model = row.try_get::<Option<String>, _>("model").ok().flatten();
-        let mapped_model = row
-            .try_get::<Option<String>, _>("mapped_model")
-            .ok()
-            .flatten();
-        let input_tokens = row
-            .try_get::<Option<i64>, _>("input_tokens")
-            .ok()
-            .flatten()
-            .and_then(i64_to_u64);
-        let output_tokens = row
-            .try_get::<Option<i64>, _>("output_tokens")
-            .ok()
-            .flatten()
-            .and_then(i64_to_u64);
-        let cached_tokens = row
-            .try_get::<Option<i64>, _>("cached_tokens")
-            .ok()
-            .flatten()
-            .and_then(i64_to_u64);
-        let cost = calculate_request_cost(
-            settings,
-            model.as_deref(),
-            mapped_model.as_deref(),
-            input_tokens,
-            output_tokens,
-            cached_tokens,
-        );
-
-        sqlx::query(
-            r#"
-UPDATE request_logs
-SET
-  cost_nano_usd = ?,
-  pricing_version = ?,
-  pricing_model = ?,
-  pricing_context_tier = ?
-WHERE id = ?;
-"#,
-        )
-        .bind(
-            cost.as_ref()
-                .map(|cost| i64::try_from(cost.cost_nano_usd).unwrap_or(i64::MAX)),
-        )
-        .bind(&settings.version)
-        .bind(cost.as_ref().map(|cost| cost.pricing_model.as_str()))
-        .bind(cost.as_ref().map(|cost| cost.context_tier.as_str()))
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|err| format!("Failed to backfill request log cost for {id}: {err}"))?;
-    }
-
-    tx.commit()
-        .await
-        .map_err(|err| format!("Failed to commit request log cost backfill: {err}"))
-}
-
 fn non_empty(value: &str) -> Option<&str> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
 }
 
-fn apply_price_multiplier(nano_usd_per_token: u64, multiplier_scaled: u64) -> u64 {
-    let numerator = (nano_usd_per_token as u128)
-        .saturating_mul(multiplier_scaled as u128)
-        .saturating_add((PRICE_MULTIPLIER_SCALE / 2) as u128);
-    let value = numerator / PRICE_MULTIPLIER_SCALE as u128;
-    u64::try_from(value).unwrap_or(u64::MAX)
-}
-
-fn default_price_multiplier_scaled() -> u64 {
-    PRICE_MULTIPLIER_SCALE
-}
-
-fn find_model_price<'a>(
-    settings: &'a ModelPricingSettings,
-    model: &str,
-) -> Option<&'a ModelPricingModel> {
-    let lookup_keys: HashSet<String> = model_lookup_keys(model).into_iter().collect();
-    settings
-        .models
-        .iter()
-        .find(|price| price_matches_lookup_keys(price, &lookup_keys))
-}
-
-fn normalize_model_alias(model: &str) -> String {
-    model
-        .trim()
-        .to_ascii_lowercase()
-        .replace(char::is_whitespace, "-")
-}
-
-fn price_matches_lookup_keys(price: &ModelPricingModel, lookup_keys: &HashSet<String>) -> bool {
-    // Keep default rows providerless while still pricing namespaced upstream model ids.
-    model_lookup_keys(&price.model_id)
-        .into_iter()
-        .any(|key| lookup_keys.contains(&key))
-        || price.aliases.iter().any(|alias| {
-            model_lookup_keys(alias)
-                .into_iter()
-                .any(|key| lookup_keys.contains(&key))
-        })
-}
-
-fn model_lookup_keys(model: &str) -> Vec<String> {
-    let normalized = normalize_model_alias(model);
-    let mut keys = Vec::new();
-    push_model_lookup_key(&mut keys, &normalized);
-    if let Some((_, suffix)) = normalized.split_once('/') {
-        push_model_lookup_key(&mut keys, suffix);
-    }
-    keys
-}
-
-fn push_model_lookup_key(keys: &mut Vec<String>, value: &str) {
-    let key = canonical_model_lookup_key(value);
-    if key.is_empty() || keys.iter().any(|existing| existing == &key) {
-        return;
-    }
-    keys.push(key);
-}
-
-fn canonical_model_lookup_key(model: &str) -> String {
-    match model {
-        "claude-opus-4.8" => "claude-opus-4-8".to_string(),
-        "claude-opus-4.7" => "claude-opus-4-7".to_string(),
-        _ => model.to_string(),
-    }
+fn row_u64(row: &sqlx::sqlite::SqliteRow, column: &str) -> u64 {
+    row.try_get::<Option<i64>, _>(column)
+        .ok()
+        .flatten()
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(0)
 }
 
 fn now_ms_i64() -> i64 {
@@ -959,33 +954,56 @@ fn now_ms_i64() -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-fn i64_to_u64(value: i64) -> Option<u64> {
-    u64::try_from(value).ok()
+fn to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::{sqlite::SqlitePoolOptions, Row};
+    use axum::extract::State;
+    use axum::http::{HeaderMap, Response, StatusCode};
+    use axum::response::IntoResponse;
+    use axum::routing::get;
+    use axum::Router;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
-    fn custom_settings_input() -> ModelPricingSettingsInput {
-        ModelPricingSettingsInput {
-            models: vec![ModelPricingModel {
-                model_id: "custom-model".to_string(),
-                aliases: vec!["openai/custom-model".to_string()],
-                price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                short: ModelPricingTier {
-                    input_nano_usd_per_token: 100,
-                    cached_input_nano_usd_per_token: 10,
-                    output_nano_usd_per_token: 200,
-                },
-                long: Some(ModelPricingTier {
-                    input_nano_usd_per_token: 300,
-                    cached_input_nano_usd_per_token: 30,
-                    output_nano_usd_per_token: 400,
-                }),
-                long_context_input_token_threshold: Some(1_000),
-            }],
+    fn usage() -> BillableUsage {
+        BillableUsage {
+            uncached_input_tokens: 100,
+            cache_read_tokens: 20,
+            cache_write_tokens: 5,
+            cache_write_5m_tokens: 3,
+            cache_write_1h_tokens: 2,
+            output_tokens: 10,
+            image_input_tokens: 0,
+            image_output_tokens: 0,
+        }
+    }
+
+    fn custom_model() -> ModelPricingModel {
+        ModelPricingModel {
+            model_id: "custom-model".to_string(),
+            aliases: vec!["openai/custom-model".to_string()],
+            price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
+            standard: ModelPricingProfile {
+                input_nano_usd_per_token: Some(100),
+                output_nano_usd_per_token: Some(200),
+                cache_read_nano_usd_per_token: Some(10),
+                cache_write_nano_usd_per_token: Some(125),
+                cache_write_5m_nano_usd_per_token: Some(125),
+                cache_write_1h_nano_usd_per_token: Some(200),
+                image_input_nano_usd_per_token: None,
+                image_output_nano_usd_per_token: None,
+            },
+            service_tier_profiles: BTreeMap::new(),
+            long_context: Some(LongContextPricing {
+                threshold: 100,
+                input_multiplier_scaled: PRICE_MULTIPLIER_SCALE * 2,
+                output_multiplier_scaled: PRICE_MULTIPLIER_SCALE * 3 / 2,
+            }),
         }
     }
 
@@ -1001,689 +1019,209 @@ mod tests {
         pool
     }
 
-    #[test]
-    fn calculates_short_context_request_cost() {
-        let settings = default_model_pricing_settings();
-        let gpt_5_6_cost = calculate_request_cost(
-            &settings,
-            Some("openai/gpt-5.6-sol"),
-            None,
-            Some(200_000),
-            Some(10_000),
-            Some(20_000),
-        )
-        .expect("gpt-5.6 cost");
-
-        assert_eq!(gpt_5_6_cost.cost_nano_usd, 1_210_000_000);
-        assert_eq!(gpt_5_6_cost.pricing_version, DEFAULT_PRICING_VERSION);
-        assert_eq!(gpt_5_6_cost.pricing_model, "gpt-5.6-sol");
-        assert_eq!(gpt_5_6_cost.context_tier, PricingContextTier::Short);
-
-        let cost = calculate_request_cost(
-            &settings,
-            Some("openai/gpt-5.5"),
-            None,
-            Some(200_000),
-            Some(10_000),
-            Some(20_000),
-        )
-        .expect("cost");
-
-        assert_eq!(cost.cost_nano_usd, 1_210_000_000);
-        assert_eq!(cost.pricing_version, DEFAULT_PRICING_VERSION);
-        assert_eq!(cost.pricing_model, "gpt-5.5");
-        assert_eq!(cost.context_tier, PricingContextTier::Short);
-
-        let pro_cost = calculate_request_cost(
-            &settings,
-            Some("openai/gpt-5.5-pro"),
-            None,
-            Some(200_000),
-            Some(10_000),
-            Some(20_000),
-        )
-        .expect("pro cost");
-
-        assert_eq!(pro_cost.cost_nano_usd, 1_210_000_000);
-        assert_eq!(pro_cost.pricing_model, "gpt-5.5-pro");
+    #[derive(Clone)]
+    struct CatalogServerState {
+        body: String,
+        requests: Arc<AtomicUsize>,
     }
 
-    #[test]
-    fn matches_provider_prefixed_and_snapshot_default_aliases() {
-        let settings = default_model_pricing_settings();
-        let cases = [
-            ("anthropic/claude-opus-4-8", "claude-opus-4-8"),
-            ("anthropic/claude-opus-4.8", "claude-opus-4-8"),
-            ("claude-opus-4.8", "claude-opus-4-8"),
-            ("opus-4-8", "claude-opus-4-8"),
-            ("anthropic/claude-opus-4-7", "claude-opus-4-7"),
-            ("anthropic/claude-opus-4.7", "claude-opus-4-7"),
-            ("claude-opus-4.7", "claude-opus-4-7"),
-            ("opus-4-7", "claude-opus-4-7"),
-            ("anthropic/claude-sonnet-5", "claude-sonnet-5"),
-            ("anthropic/claude-fable-5", "claude-fable-5"),
-            ("anthropic/claude-sonnet-4.6", "claude-sonnet-4.6"),
-            ("models/gemini-3-flash-preview", "gemini-3-flash-preview"),
-            ("google/gemini-3.5-flash", "gemini-3.5-flash"),
-            ("models/gemini-3.5-flash", "gemini-3.5-flash"),
-            ("deepseek/deepseek-v4-pro", "deepseek-v4-pro"),
-            ("moonshotai/kimi-k2.6", "kimi-k2.6"),
-            ("z-ai/glm-5.2", "glm-5.2"),
-            ("openai/gpt-5.6-sol", "gpt-5.6-sol"),
-            ("openai/gpt-5.6-terra", "gpt-5.6-terra"),
-            ("openai/gpt-5.6-luna", "gpt-5.6-luna"),
-            ("openai/gpt-5.5-pro", "gpt-5.5-pro"),
-            ("openai/gpt-5.5", "gpt-5.5"),
-            ("gpt-5.5-latest", "gpt-5.5"),
-            ("openai/gpt-5.2", "gpt-5.2"),
-            ("openai/gpt-5.2-codex", "gpt-5.2-codex"),
-            ("openai/gpt-image-2", "gpt-image-2"),
-            ("gpt-image-2-2026-04-21", "gpt-image-2"),
-            ("openai/gpt-image-2-2026-04-21", "gpt-image-2"),
-            ("x-ai/grok-4.5", "grok-4.5"),
-            ("grok-4.5-high", "grok-4.5"),
-            ("x-ai/grok-4.5-high", "grok-4.5"),
-            ("x-ai/grok-4.3", "grok-4.3"),
-            ("x-ai/grok-4.20", "grok-4.20"),
-            ("grok-4.20-0309-reasoning", "grok-4.20"),
-            ("grok-4.20-0309-non-reasoning", "grok-4.20"),
-            ("x-ai/grok-4.20-multi-agent", "grok-4.20-multi-agent"),
-            ("grok-4.20-multi-agent-0309", "grok-4.20-multi-agent"),
-            ("x-ai/grok-4.20-multi-agent-0309", "grok-4.20-multi-agent"),
-            ("x-ai/grok-build-0.1", "grok-build-0.1"),
-            ("composer-2.5", "grok-composer-2.5-fast"),
-            ("x-ai/grok-composer-2.5-fast", "grok-composer-2.5-fast"),
-        ];
-
-        for (incoming_model, expected_pricing_model) in cases {
-            let cost = calculate_request_cost(
-                &settings,
-                Some(incoming_model),
-                None,
-                Some(1),
-                Some(1),
-                Some(0),
-            )
-            .expect("provider-prefixed model should be priced");
-
-            assert_eq!(cost.pricing_model, expected_pricing_model);
-        }
-    }
-
-    #[test]
-    fn leaves_removed_gpt_5_4_image_model_unpriced() {
-        let settings = default_model_pricing_settings();
-        let cost = calculate_request_cost(
-            &settings,
-            Some("gpt-5.4-image-2"),
-            None,
-            Some(1),
-            Some(1),
-            Some(0),
-        );
-
-        assert!(cost.is_none());
-    }
-
-    #[test]
-    fn calculates_long_context_request_cost_from_mapped_model() {
-        let settings = default_model_pricing_settings();
-        let gpt_5_6_cost = calculate_request_cost(
-            &settings,
-            Some("alias"),
-            Some("gpt-5.6-luna"),
-            Some(1_000_000),
-            Some(10_000),
-            Some(200_000),
-        )
-        .expect("gpt-5.6 long cost");
-
-        assert_eq!(gpt_5_6_cost.cost_nano_usd, 8_650_000_000);
-        assert_eq!(gpt_5_6_cost.pricing_model, "gpt-5.6-luna");
-        assert_eq!(gpt_5_6_cost.context_tier, PricingContextTier::Long);
-
-        let cost = calculate_request_cost(
-            &settings,
-            Some("alias"),
-            Some("gpt-5.4"),
-            Some(1_000_000),
-            Some(10_000),
-            Some(200_000),
-        )
-        .expect("cost");
-
-        assert_eq!(cost.cost_nano_usd, 4_325_000_000);
-        assert_eq!(cost.pricing_model, "gpt-5.4");
-        assert_eq!(cost.context_tier, PricingContextTier::Long);
-    }
-
-    #[test]
-    fn prices_long_context_cached_tokens_with_long_cached_tier() {
-        let settings = normalize_model_pricing_settings(custom_settings_input()).expect("settings");
-        let cost = calculate_request_cost(
-            &settings,
-            Some("openai/custom-model"),
-            None,
-            Some(1_001),
-            Some(0),
-            Some(1),
-        )
-        .expect("cost");
-
-        assert_eq!(cost.cost_nano_usd, 300_030);
-        assert_eq!(cost.context_tier, PricingContextTier::Long);
-    }
-
-    #[test]
-    fn leaves_unknown_or_missing_usage_unpriced() {
-        let settings = default_model_pricing_settings();
-        assert!(calculate_request_cost(
-            &settings,
-            Some("unknown-model"),
-            None,
-            Some(1),
-            Some(1),
-            None
-        )
-        .is_none());
-        assert!(
-            calculate_request_cost(&settings, Some("gpt-5.5"), None, None, Some(1), None).is_none()
-        );
-    }
-
-    #[test]
-    fn normalizes_custom_settings_and_prices_cached_tokens() {
-        let settings = normalize_model_pricing_settings(custom_settings_input()).expect("settings");
-        assert!(settings.version.starts_with("custom."));
-        assert_eq!(settings.models[0].aliases, vec!["openai/custom-model"]);
-        assert_eq!(
-            settings.models[0].price_multiplier_scaled,
-            PRICE_MULTIPLIER_SCALE
-        );
-
-        let cost = calculate_request_cost(
-            &settings,
-            Some("openai/custom-model"),
-            None,
-            Some(100),
-            Some(10),
-            Some(20),
-        )
-        .expect("cost");
-
-        assert_eq!(cost.cost_nano_usd, 10_200);
-        assert_eq!(cost.pricing_model, "custom-model");
-        assert_eq!(cost.context_tier, PricingContextTier::Short);
-    }
-
-    #[test]
-    fn applies_model_price_multiplier_to_request_cost() {
-        let mut input = custom_settings_input();
-        input.models[0].price_multiplier_scaled = PRICE_MULTIPLIER_SCALE * 5 / 2;
-        let settings = normalize_model_pricing_settings(input).expect("settings");
-        let cost = calculate_request_cost(
-            &settings,
-            Some("openai/custom-model"),
-            None,
-            Some(100),
-            Some(10),
-            Some(20),
-        )
-        .expect("cost");
-
-        assert_eq!(cost.cost_nano_usd, 25_500);
-        assert_eq!(cost.pricing_model, "custom-model");
-    }
-
-    #[test]
-    fn rejects_zero_price_multiplier() {
-        let mut input = custom_settings_input();
-        input.models[0].price_multiplier_scaled = 0;
-        let result = normalize_model_pricing_settings(input);
-
-        assert!(result
-            .expect_err("zero multiplier")
-            .contains("Price multiplier must be positive"));
-    }
-
-    #[test]
-    fn normalizes_default_settings_without_creating_custom_version() {
-        let default_settings = default_model_pricing_settings();
-        let normalized = normalize_model_pricing_settings(ModelPricingSettingsInput {
-            models: default_settings.models.clone(),
-        })
-        .expect("default settings");
-
-        assert_eq!(normalized.version, DEFAULT_PRICING_VERSION);
-        assert_eq!(normalized.models, default_settings.models);
-    }
-
-    #[test]
-    fn deserializes_legacy_model_pricing_rows_without_multiplier_field() {
-        let json = r#"
+    async fn catalog_handler(
+        State(state): State<CatalogServerState>,
+        headers: HeaderMap,
+    ) -> impl IntoResponse {
+        state.requests.fetch_add(1, Ordering::SeqCst);
+        if headers
+            .get(IF_NONE_MATCH)
+            .and_then(|value| value.to_str().ok())
+            == Some("\"pricing-v1\"")
         {
-          "modelId": "legacy-model",
-          "aliases": [],
-          "short": {
-            "inputNanoUsdPerToken": 10,
-            "cachedInputNanoUsdPerToken": 5,
-            "outputNanoUsdPerToken": 20
-          },
-          "long": null,
-          "longContextInputTokenThreshold": null
+            return Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .body(String::new())
+                .expect("304 response");
         }
-        "#;
-
-        let model = serde_json::from_str::<ModelPricingModel>(json).expect("legacy model");
-
-        assert_eq!(model.price_multiplier_scaled, PRICE_MULTIPLIER_SCALE);
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(ETAG, "\"pricing-v1\"")
+            .body(state.body)
+            .expect("catalog response")
     }
 
     #[test]
-    fn rejects_duplicate_aliases() {
-        let result = normalize_model_pricing_settings(ModelPricingSettingsInput {
-            models: vec![
-                ModelPricingModel {
-                    model_id: "left".to_string(),
-                    aliases: vec!["shared".to_string()],
-                    price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                    short: ModelPricingTier {
-                        input_nano_usd_per_token: 1,
-                        cached_input_nano_usd_per_token: 1,
-                        output_nano_usd_per_token: 1,
-                    },
-                    long: None,
-                    long_context_input_token_threshold: None,
-                },
-                ModelPricingModel {
-                    model_id: "right".to_string(),
-                    aliases: vec![" Shared ".to_string()],
-                    price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                    short: ModelPricingTier {
-                        input_nano_usd_per_token: 1,
-                        cached_input_nano_usd_per_token: 1,
-                        output_nano_usd_per_token: 1,
-                    },
-                    long: None,
-                    long_context_input_token_threshold: None,
-                },
-            ],
-        });
-
-        assert!(result
-            .expect_err("duplicate alias")
-            .to_ascii_lowercase()
-            .contains("shared"));
-    }
-
-    #[test]
-    fn rejects_duplicate_providerless_lookup_keys() {
-        let result = normalize_model_pricing_settings(ModelPricingSettingsInput {
-            models: vec![
-                ModelPricingModel {
-                    model_id: "openai/custom-model".to_string(),
-                    aliases: Vec::new(),
-                    price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                    short: ModelPricingTier {
-                        input_nano_usd_per_token: 1,
-                        cached_input_nano_usd_per_token: 1,
-                        output_nano_usd_per_token: 1,
-                    },
-                    long: None,
-                    long_context_input_token_threshold: None,
-                },
-                ModelPricingModel {
-                    model_id: "custom-model".to_string(),
-                    aliases: Vec::new(),
-                    price_multiplier_scaled: PRICE_MULTIPLIER_SCALE,
-                    short: ModelPricingTier {
-                        input_nano_usd_per_token: 1,
-                        cached_input_nano_usd_per_token: 1,
-                        output_nano_usd_per_token: 1,
-                    },
-                    long: None,
-                    long_context_input_token_threshold: None,
-                },
-            ],
-        });
-
-        assert!(result
-            .expect_err("providerless duplicate")
-            .to_ascii_lowercase()
-            .contains("custom-model"));
-    }
-
-    #[test]
-    fn default_settings_include_new_vendor_models() {
+    fn bundled_catalog_uses_latest_upstream_snapshot() {
         let settings = default_model_pricing_settings();
-        assert_eq!(settings.version, DEFAULT_PRICING_VERSION);
-        assert!(settings
-            .models
-            .iter()
-            .all(|model| !model.model_id.contains('/')));
-        assert!(settings
-            .models
-            .iter()
-            .all(|model| model.price_multiplier_scaled == PRICE_MULTIPLIER_SCALE));
-
-        let gemini_flash = settings
-            .models
-            .iter()
-            .find(|model| model.model_id == "gemini-3.5-flash")
-            .expect("gemini-3.5-flash should exist");
-        assert_eq!(gemini_flash.short.input_nano_usd_per_token, 1_500);
-        assert_eq!(gemini_flash.short.cached_input_nano_usd_per_token, 150);
-        assert_eq!(gemini_flash.short.output_nano_usd_per_token, 9_000);
-        assert_eq!(
-            gemini_flash.aliases,
-            vec!["google/gemini-3.5-flash", "models/gemini-3.5-flash"]
-        );
-
-        let gpt_5_3_codex = settings
-            .models
-            .iter()
-            .find(|model| model.model_id == "gpt-5.3-codex")
-            .expect("gpt-5.3-codex should exist");
-        assert_eq!(gpt_5_3_codex.short.input_nano_usd_per_token, 1_750);
-        assert_eq!(gpt_5_3_codex.short.cached_input_nano_usd_per_token, 175);
-        assert_eq!(gpt_5_3_codex.short.output_nano_usd_per_token, 14_000);
-        assert_eq!(gpt_5_3_codex.aliases, vec!["openai/gpt-5.3-codex"]);
-
-        let gpt_5_2 = settings
-            .models
-            .iter()
-            .find(|model| model.model_id == "gpt-5.2")
-            .expect("gpt-5.2 should exist");
-        assert_eq!(gpt_5_2.short.input_nano_usd_per_token, 1_750);
-        assert_eq!(gpt_5_2.short.cached_input_nano_usd_per_token, 175);
-        assert_eq!(gpt_5_2.short.output_nano_usd_per_token, 14_000);
-        assert_eq!(gpt_5_2.aliases, vec!["openai/gpt-5.2"]);
-
-        let gpt_5_2_codex = settings
-            .models
-            .iter()
-            .find(|model| model.model_id == "gpt-5.2-codex")
-            .expect("gpt-5.2-codex should exist");
-        assert_eq!(gpt_5_2_codex.short.input_nano_usd_per_token, 1_750);
-        assert_eq!(gpt_5_2_codex.short.cached_input_nano_usd_per_token, 175);
-        assert_eq!(gpt_5_2_codex.short.output_nano_usd_per_token, 14_000);
-        assert_eq!(gpt_5_2_codex.aliases, vec!["openai/gpt-5.2-codex"]);
-
-        let grok_4_5 = settings
-            .models
-            .iter()
-            .find(|model| model.model_id == "grok-4.5")
-            .expect("grok-4.5 should exist");
-        assert_eq!(grok_4_5.short.input_nano_usd_per_token, 2_000);
-        assert_eq!(grok_4_5.short.cached_input_nano_usd_per_token, 500);
-        assert_eq!(grok_4_5.short.output_nano_usd_per_token, 6_000);
-        assert!(grok_4_5
-            .aliases
-            .iter()
-            .any(|alias| alias == "grok-4.5-high"));
-        assert!(grok_4_5
-            .aliases
-            .iter()
-            .any(|alias| alias == "x-ai/grok-4.5"));
-
-        let grok_4_3 = settings
-            .models
-            .iter()
-            .find(|model| model.model_id == "grok-4.3")
-            .expect("grok-4.3 should exist");
-        assert_eq!(grok_4_3.short.input_nano_usd_per_token, 1_250);
-        assert_eq!(grok_4_3.short.cached_input_nano_usd_per_token, 200);
-        assert_eq!(grok_4_3.short.output_nano_usd_per_token, 2_500);
-
-        let grok_4_20 = settings
-            .models
-            .iter()
-            .find(|model| model.model_id == "grok-4.20")
-            .expect("grok-4.20 should exist");
-        assert_eq!(grok_4_20.short.input_nano_usd_per_token, 1_250);
-        assert_eq!(grok_4_20.short.cached_input_nano_usd_per_token, 200);
-        assert_eq!(grok_4_20.short.output_nano_usd_per_token, 2_500);
-        assert!(grok_4_20
-            .aliases
-            .iter()
-            .any(|alias| alias == "grok-4.20-0309-reasoning"));
-        assert!(grok_4_20
-            .aliases
-            .iter()
-            .any(|alias| alias == "x-ai/grok-4.20"));
-
-        let grok_multi_agent = settings
-            .models
-            .iter()
-            .find(|model| model.model_id == "grok-4.20-multi-agent")
-            .expect("grok-4.20-multi-agent should exist");
-        assert_eq!(grok_multi_agent.short.input_nano_usd_per_token, 1_250);
-        assert_eq!(grok_multi_agent.short.cached_input_nano_usd_per_token, 200);
-        assert_eq!(grok_multi_agent.short.output_nano_usd_per_token, 2_500);
-        assert!(grok_multi_agent
-            .aliases
-            .iter()
-            .any(|alias| alias == "grok-4.20-multi-agent-0309"));
-
-        let grok_build = settings
-            .models
-            .iter()
-            .find(|model| model.model_id == "grok-build-0.1")
-            .expect("grok-build-0.1 should exist");
-        assert_eq!(grok_build.short.input_nano_usd_per_token, 1_000);
-        assert_eq!(grok_build.short.cached_input_nano_usd_per_token, 200);
-        assert_eq!(grok_build.short.output_nano_usd_per_token, 2_000);
-
-        let grok_composer = settings
-            .models
-            .iter()
-            .find(|model| model.model_id == "grok-composer-2.5-fast")
-            .expect("grok-composer-2.5-fast should exist");
-        assert_eq!(grok_composer.short.input_nano_usd_per_token, 1_000);
-        assert_eq!(grok_composer.short.cached_input_nano_usd_per_token, 200);
-        assert_eq!(grok_composer.short.output_nano_usd_per_token, 2_000);
-
-        let glm_5_2 = settings
-            .models
-            .iter()
-            .find(|model| model.model_id == "glm-5.2")
-            .expect("glm-5.2 should exist");
-        assert_eq!(glm_5_2.short.input_nano_usd_per_token, 1_400);
-        assert_eq!(glm_5_2.short.cached_input_nano_usd_per_token, 260);
-        assert_eq!(glm_5_2.short.output_nano_usd_per_token, 4_400);
-        assert_eq!(glm_5_2.aliases, vec!["z-ai/glm-5.2"]);
-
-        let claude_fable_5 = settings
-            .models
-            .iter()
-            .find(|model| model.model_id == "claude-fable-5")
-            .expect("claude-fable-5 should exist");
-        assert_eq!(claude_fable_5.short.input_nano_usd_per_token, 10_000);
-        assert_eq!(claude_fable_5.short.cached_input_nano_usd_per_token, 1_000);
-        assert_eq!(claude_fable_5.short.output_nano_usd_per_token, 50_000);
-        assert_eq!(claude_fable_5.aliases, vec!["anthropic/claude-fable-5"]);
-
-        let claude_sonnet = settings
-            .models
-            .iter()
-            .find(|model| model.model_id == "claude-sonnet-4.6")
-            .expect("claude-sonnet-4.6 should exist");
-        assert_eq!(claude_sonnet.short.input_nano_usd_per_token, 3_000);
-        assert_eq!(claude_sonnet.aliases, vec!["anthropic/claude-sonnet-4.6"]);
-
-        let claude_opus_4_8 = settings
-            .models
-            .iter()
-            .find(|model| model.model_id == "claude-opus-4-8")
-            .expect("claude-opus-4-8 should exist");
-        assert_eq!(claude_opus_4_8.short.input_nano_usd_per_token, 5_000);
-        assert_eq!(claude_opus_4_8.short.cached_input_nano_usd_per_token, 500);
-        assert_eq!(claude_opus_4_8.short.output_nano_usd_per_token, 25_000);
-        assert_eq!(
-            claude_opus_4_8.aliases,
-            vec![
-                "claude-opus-4.8",
-                "opus-4-8",
-                "anthropic/claude-opus-4-8",
-                "anthropic/claude-opus-4.8"
-            ]
-        );
-
-        let claude_opus = settings
-            .models
-            .iter()
-            .find(|model| model.model_id == "claude-opus-4-7")
-            .expect("claude-opus-4-7 should exist");
-        assert_eq!(claude_opus.short.input_nano_usd_per_token, 5_000);
-        assert_eq!(claude_opus.short.cached_input_nano_usd_per_token, 500);
-        assert_eq!(claude_opus.short.output_nano_usd_per_token, 25_000);
-        assert_eq!(
-            claude_opus.aliases,
-            vec![
-                "claude-opus-4.7",
-                "opus-4-7",
-                "anthropic/claude-opus-4-7",
-                "anthropic/claude-opus-4.7"
-            ]
-        );
-
-        assert!(settings
-            .models
-            .iter()
-            .any(|model| model.model_id == "gpt-image-2"));
-        let gpt_image_2 = settings
-            .models
-            .iter()
-            .find(|model| model.model_id == "gpt-image-2")
-            .expect("gpt-image-2 should exist");
-        assert_eq!(
-            gpt_image_2.aliases,
-            vec![
-                "openai/gpt-image-2".to_string(),
-                "gpt-image-2-2026-04-21".to_string(),
-                "openai/gpt-image-2-2026-04-21".to_string()
-            ]
-        );
-        assert!(!settings
-            .models
-            .iter()
-            .any(|model| model.model_id == "gpt-5.4-image-2"));
+        assert_eq!(settings.version, "catalog.e316ebf5.3a0ca530");
+        let source = settings.source.expect("catalog source");
+        assert_eq!(source.commit, "e316ebf52838a89d57fc790981cce7520f819ac8");
     }
 
-    #[tokio::test]
-    async fn reads_default_settings_when_no_custom_row_exists() {
-        let pool = setup_pool().await;
+    #[test]
+    fn prices_all_components_without_double_counting() {
+        let settings = ModelPricingSettings {
+            version: "test".to_string(),
+            source: None,
+            models: vec![custom_model()],
+        };
+        let cost =
+            calculate_request_cost(&settings, Some("openai/custom-model"), None, None, &usage())
+                .expect("cost");
 
-        let snapshot = read_model_pricing_settings_snapshot(&pool)
-            .await
-            .expect("snapshot");
-
-        assert_eq!(snapshot.settings, snapshot.default_settings);
-        assert_eq!(snapshot.settings.version, DEFAULT_PRICING_VERSION);
+        assert_eq!(cost.breakdown.uncached_input_nano_usd, 20_000);
+        assert_eq!(cost.breakdown.cache_read_nano_usd, 400);
+        assert_eq!(cost.breakdown.cache_write_nano_usd, 1_250);
+        assert_eq!(cost.breakdown.cache_write_5m_nano_usd, 750);
+        assert_eq!(cost.breakdown.cache_write_1h_nano_usd, 800);
+        assert_eq!(cost.breakdown.output_nano_usd, 3_000);
+        assert_eq!(cost.cost_nano_usd, 26_200);
+        assert_eq!(cost.context_tier, PricingContextTier::Long);
     }
 
-    #[tokio::test]
-    async fn save_model_pricing_settings_backfills_request_logs() {
-        let pool = setup_pool().await;
-        sqlx::query(
-            r#"
-INSERT INTO request_logs (
-  ts_ms,
-  path,
-  provider,
-  upstream_id,
-  model,
-  mapped_model,
-  stream,
-  status,
-  input_tokens,
-  output_tokens,
-  total_tokens,
-  cached_tokens,
-  latency_ms,
-  pricing_version
-)
-VALUES (1, '/v1/chat/completions', 'openai', 'test', 'openai/custom-model', NULL, 0, 200, 100, 10, 110, 20, 30, 'old');
-"#,
+    #[test]
+    fn gpt_5_6_profiles_apply_standard_priority_and_flex_prices() {
+        let settings = default_model_pricing_settings();
+        let usage = BillableUsage {
+            uncached_input_tokens: 1,
+            cache_read_tokens: 1,
+            cache_write_tokens: 1,
+            output_tokens: 1,
+            ..BillableUsage::default()
+        };
+        let standard = calculate_request_cost(&settings, Some("gpt-5.6-terra"), None, None, &usage)
+            .expect("standard cost");
+        let priority = calculate_request_cost(
+            &settings,
+            Some("gpt-5.6-terra"),
+            None,
+            Some("priority"),
+            &usage,
         )
-        .execute(&pool)
-        .await
-        .expect("insert request log");
+        .expect("priority cost");
+        let flex =
+            calculate_request_cost(&settings, Some("gpt-5.6-terra"), None, Some("flex"), &usage)
+                .expect("flex cost");
 
-        let snapshot = save_model_pricing_settings(&pool, custom_settings_input())
-            .await
-            .expect("save settings");
+        assert_eq!(standard.cost_nano_usd, 20_875);
+        assert_eq!(priority.cost_nano_usd, 41_750);
+        assert_eq!(flex.cost_nano_usd, 10_438);
+    }
 
-        let row = sqlx::query(
-            r#"
-SELECT cost_nano_usd, pricing_version, pricing_model, pricing_context_tier
-FROM request_logs
-WHERE id = 1;
-"#,
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("request log");
-
-        assert!(snapshot.settings.version.starts_with("custom."));
-        assert_eq!(row.try_get::<i64, _>("cost_nano_usd").ok(), Some(10_200));
-        assert_eq!(
-            row.try_get::<String, _>("pricing_version").ok().as_deref(),
-            Some(snapshot.settings.version.as_str())
+    #[test]
+    fn missing_price_is_unpriced_but_explicit_zero_is_free() {
+        let mut model = custom_model();
+        model.standard.cache_write_1h_nano_usd_per_token = None;
+        model.standard.cache_write_nano_usd_per_token = None;
+        let settings = ModelPricingSettings {
+            version: "test".to_string(),
+            source: None,
+            models: vec![model.clone()],
+        };
+        let usage = BillableUsage {
+            cache_write_1h_tokens: 1,
+            ..BillableUsage::default()
+        };
+        assert!(
+            calculate_request_cost(&settings, Some("custom-model"), None, None, &usage).is_none()
         );
+
+        model.standard.cache_write_1h_nano_usd_per_token = Some(0);
+        let settings = ModelPricingSettings {
+            version: "test".to_string(),
+            source: None,
+            models: vec![model],
+        };
         assert_eq!(
-            row.try_get::<String, _>("pricing_model").ok().as_deref(),
-            Some("custom-model")
-        );
-        assert_eq!(
-            row.try_get::<String, _>("pricing_context_tier")
-                .ok()
-                .as_deref(),
-            Some("short")
+            calculate_request_cost(&settings, Some("custom-model"), None, None, &usage)
+                .expect("free cost")
+                .cost_nano_usd,
+            0
         );
     }
 
+    #[test]
+    fn remote_catalog_merge_preserves_only_explicit_overrides() {
+        let mut catalog = default_model_pricing_settings();
+        catalog.models = vec![custom_model()];
+        let mut changed = custom_model();
+        changed.standard.input_nano_usd_per_token = Some(999);
+        let overrides = diff_overrides(&catalog.models, &[changed.clone()]);
+        assert_eq!(overrides.upserts, vec![changed.clone()]);
+
+        let mut updated_catalog = catalog.clone();
+        updated_catalog.models[0].standard.output_nano_usd_per_token = Some(777);
+        let effective = effective_settings(&updated_catalog, &overrides).expect("merge");
+        assert_eq!(effective.models[0], changed);
+    }
+
     #[tokio::test]
-    async fn backfill_prices_provider_prefixed_default_models() {
+    async fn save_stores_overrides_and_reset_tracks_catalog() {
         let pool = setup_pool().await;
-        sqlx::query(
-            r#"
-INSERT INTO request_logs (
-  ts_ms,
-  path,
-  provider,
-  upstream_id,
-  model,
-  mapped_model,
-  stream,
-  status,
-  input_tokens,
-  output_tokens,
-  total_tokens,
-  cached_tokens,
-  latency_ms,
-  pricing_version
-)
-VALUES (1, '/v1/chat/completions', 'openai', 'test', 'openai/gpt-5.5', NULL, 0, 200, 100, 10, 110, 20, 30, 'old');
-"#,
+        let mut model = default_model_pricing_settings().models[0].clone();
+        model.standard.input_nano_usd_per_token = Some(9_999);
+        let saved = save_model_pricing_settings(
+            &pool,
+            ModelPricingSettingsInput {
+                models: vec![model.clone()],
+            },
         )
-        .execute(&pool)
         .await
-        .expect("insert request log");
+        .expect("save");
+        assert!(saved.settings.version.starts_with("custom."));
+        assert_eq!(saved.settings.models, vec![model]);
 
-        backfill_request_log_costs(&pool)
+        let reset = reset_model_pricing_settings(&pool).await.expect("reset");
+        assert_eq!(reset.settings, reset.default_settings);
+    }
+
+    #[tokio::test]
+    async fn remote_catalog_refresh_uses_etag_and_cached_catalog() {
+        let pool = setup_pool().await;
+        let mut catalog = serde_json::from_str::<serde_json::Value>(BUNDLED_PRICING_CATALOG)
+            .expect("bundled catalog json");
+        catalog["version"] = serde_json::Value::String("remote.test".to_string());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/pricing.json", get(catalog_handler))
+            .with_state(CatalogServerState {
+                body: serde_json::to_string(&catalog).expect("catalog body"),
+                requests: requests.clone(),
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("backfill costs");
-
-        let row = sqlx::query("SELECT cost_nano_usd, pricing_model FROM request_logs LIMIT 1;")
-            .fetch_one(&pool)
-            .await
-            .expect("priced row");
-
-        assert_eq!(row.try_get::<i64, _>("cost_nano_usd").ok(), Some(710_000));
-        assert_eq!(
-            row.try_get::<String, _>("pricing_model").ok().as_deref(),
-            Some("gpt-5.5")
+            .expect("bind catalog server");
+        let url = format!(
+            "http://{}/pricing.json",
+            listener.local_addr().expect("catalog address")
         );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("catalog server");
+        });
+
+        let first = refresh_remote_model_pricing_catalog_from_url(&pool, None, &url)
+            .await
+            .expect("first refresh");
+        let second = refresh_remote_model_pricing_catalog_from_url(&pool, None, &url)
+            .await
+            .expect("conditional refresh");
+        let settings = read_model_pricing_settings(&pool)
+            .await
+            .expect("cached settings");
+        server.abort();
+
+        assert_eq!(first, RemoteCatalogRefresh::Updated);
+        assert_eq!(second, RemoteCatalogRefresh::NotModified);
+        assert_eq!(settings.version, "remote.test");
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn rejects_legacy_short_long_schema() {
+        let json = r#"{
+          "modelId":"legacy",
+          "aliases":[],
+          "priceMultiplierScaled":1000000000000,
+          "short":{"inputNanoUsdPerToken":1},
+          "long":null
+        }"#;
+        assert!(serde_json::from_str::<ModelPricingModel>(json).is_err());
     }
 }

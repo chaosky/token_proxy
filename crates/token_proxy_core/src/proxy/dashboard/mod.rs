@@ -6,6 +6,20 @@ use super::model_discovery::UpstreamModelProbe;
 
 const RECENT_PAGE_SIZE: u32 = 50;
 
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardUsageBreakdown {
+    /// 扫描型 UI 使用的缓存总量；精确计费仍使用下方独立分量。
+    pub cached_tokens: u64,
+    pub uncached_input_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub cache_write_5m_tokens: u64,
+    pub cache_write_1h_tokens: u64,
+    pub image_input_tokens: u64,
+    pub image_output_tokens: u64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardRange {
@@ -23,7 +37,8 @@ pub struct DashboardSummary {
     pub total_tokens: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
-    pub cached_tokens: u64,
+    #[serde(flatten)]
+    pub usage: DashboardUsageBreakdown,
     pub avg_latency_ms: u64,
     pub median_latency_ms: u64,
 }
@@ -34,7 +49,8 @@ pub struct DashboardProviderStat {
     pub provider: String,
     pub requests: u64,
     pub total_tokens: u64,
-    pub cached_tokens: u64,
+    #[serde(flatten)]
+    pub usage: DashboardUsageBreakdown,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,7 +59,8 @@ pub struct DashboardUpstreamStat {
     pub upstream_id: String,
     pub requests: u64,
     pub total_tokens: u64,
-    pub cached_tokens: u64,
+    #[serde(flatten)]
+    pub usage: DashboardUsageBreakdown,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -53,7 +70,8 @@ pub struct DashboardAccountStat {
     pub account_id: Option<String>,
     pub requests: u64,
     pub total_tokens: u64,
-    pub cached_tokens: u64,
+    #[serde(flatten)]
+    pub usage: DashboardUsageBreakdown,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -64,7 +82,8 @@ pub struct DashboardSeriesPoint {
     pub error_requests: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
-    pub cached_tokens: u64,
+    #[serde(flatten)]
+    pub usage: DashboardUsageBreakdown,
     pub total_tokens: u64,
 }
 
@@ -85,6 +104,14 @@ pub struct DashboardRequestItem {
     pub total_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub cached_tokens: Option<u64>,
+    pub uncached_input_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub cache_write_5m_tokens: Option<u64>,
+    pub cache_write_1h_tokens: Option<u64>,
+    pub image_input_tokens: Option<u64>,
+    pub image_output_tokens: Option<u64>,
+    pub service_tier: Option<String>,
     pub cost_nano_usd: Option<u64>,
     pub pricing_version: Option<String>,
     pub pricing_model: Option<String>,
@@ -214,7 +241,13 @@ SELECT
   END), 0) AS total_tokens,
   COALESCE(SUM(COALESCE(input_tokens, 0)), 0) AS input_tokens,
   COALESCE(SUM(COALESCE(output_tokens, 0)), 0) AS output_tokens,
-  COALESCE(SUM(COALESCE(cached_tokens, 0)), 0) AS cached_tokens,
+  COALESCE(SUM(COALESCE(uncached_input_tokens, 0)), 0) AS uncached_input_tokens,
+  COALESCE(SUM(COALESCE(cache_read_tokens, 0)), 0) AS cache_read_tokens,
+  COALESCE(SUM(COALESCE(cache_write_tokens, 0)), 0) AS cache_write_tokens,
+  COALESCE(SUM(COALESCE(cache_write_5m_tokens, 0)), 0) AS cache_write_5m_tokens,
+  COALESCE(SUM(COALESCE(cache_write_1h_tokens, 0)), 0) AS cache_write_1h_tokens,
+  COALESCE(SUM(COALESCE(image_input_tokens, 0)), 0) AS image_input_tokens,
+  COALESCE(SUM(COALESCE(image_output_tokens, 0)), 0) AS image_output_tokens,
   COALESCE(SUM(latency_ms), 0) AS latency_sum_ms
 FROM request_logs
 WHERE (?1 IS NULL OR ts_ms >= ?1)
@@ -240,7 +273,7 @@ WHERE (?1 IS NULL OR ts_ms >= ?1)
     let total_tokens = i64_to_u64(row.try_get("total_tokens").unwrap_or(0));
     let input_tokens = i64_to_u64(row.try_get("input_tokens").unwrap_or(0));
     let output_tokens = i64_to_u64(row.try_get("output_tokens").unwrap_or(0));
-    let cached_tokens = i64_to_u64(row.try_get("cached_tokens").unwrap_or(0));
+    let usage = usage_breakdown_from_row(&row);
     let latency_sum_ms = i64_to_u64(row.try_get("latency_sum_ms").unwrap_or(0));
 
     let avg_latency_ms = if total_requests == 0 {
@@ -268,7 +301,7 @@ WHERE (?1 IS NULL OR ts_ms >= ?1)
         total_tokens,
         input_tokens,
         output_tokens,
-        cached_tokens,
+        usage,
         avg_latency_ms,
         median_latency_ms,
     })
@@ -349,7 +382,13 @@ SELECT
     WHEN input_tokens IS NOT NULL OR output_tokens IS NOT NULL THEN COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
     ELSE 0
   END), 0) AS total_tokens,
-  COALESCE(SUM(COALESCE(cached_tokens, 0)), 0) AS cached_tokens
+  COALESCE(SUM(COALESCE(uncached_input_tokens, 0)), 0) AS uncached_input_tokens,
+  COALESCE(SUM(COALESCE(cache_read_tokens, 0)), 0) AS cache_read_tokens,
+  COALESCE(SUM(COALESCE(cache_write_tokens, 0)), 0) AS cache_write_tokens,
+  COALESCE(SUM(COALESCE(cache_write_5m_tokens, 0)), 0) AS cache_write_5m_tokens,
+  COALESCE(SUM(COALESCE(cache_write_1h_tokens, 0)), 0) AS cache_write_1h_tokens,
+  COALESCE(SUM(COALESCE(image_input_tokens, 0)), 0) AS image_input_tokens,
+  COALESCE(SUM(COALESCE(image_output_tokens, 0)), 0) AS image_output_tokens
 FROM request_logs
 WHERE (?1 IS NULL OR ts_ms >= ?1)
   AND (?2 IS NULL OR ts_ms <= ?2)
@@ -373,12 +412,12 @@ ORDER BY total_tokens DESC;
         let provider: String = row.try_get("provider").ok()?;
         let requests: i64 = row.try_get("requests").ok()?;
         let total_tokens: i64 = row.try_get("total_tokens").ok()?;
-        let cached_tokens: i64 = row.try_get("cached_tokens").ok()?;
+        let usage = usage_breakdown_from_row(&row);
         Some(DashboardProviderStat {
             provider,
             requests: i64_to_u64(requests),
             total_tokens: i64_to_u64(total_tokens),
-            cached_tokens: i64_to_u64(cached_tokens),
+            usage,
         })
     })
     .collect::<Vec<_>>();
@@ -401,7 +440,13 @@ SELECT
     WHEN input_tokens IS NOT NULL OR output_tokens IS NOT NULL THEN COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
     ELSE 0
   END), 0) AS total_tokens,
-  COALESCE(SUM(COALESCE(cached_tokens, 0)), 0) AS cached_tokens
+  COALESCE(SUM(COALESCE(uncached_input_tokens, 0)), 0) AS uncached_input_tokens,
+  COALESCE(SUM(COALESCE(cache_read_tokens, 0)), 0) AS cache_read_tokens,
+  COALESCE(SUM(COALESCE(cache_write_tokens, 0)), 0) AS cache_write_tokens,
+  COALESCE(SUM(COALESCE(cache_write_5m_tokens, 0)), 0) AS cache_write_5m_tokens,
+  COALESCE(SUM(COALESCE(cache_write_1h_tokens, 0)), 0) AS cache_write_1h_tokens,
+  COALESCE(SUM(COALESCE(image_input_tokens, 0)), 0) AS image_input_tokens,
+  COALESCE(SUM(COALESCE(image_output_tokens, 0)), 0) AS image_output_tokens
 FROM request_logs
 WHERE (?1 IS NULL OR ts_ms >= ?1)
   AND (?2 IS NULL OR ts_ms <= ?2)
@@ -419,12 +464,12 @@ ORDER BY total_tokens DESC, requests DESC, upstream_id ASC;
         let upstream_id: String = row.try_get("upstream_id").ok()?;
         let requests: i64 = row.try_get("requests").ok()?;
         let total_tokens: i64 = row.try_get("total_tokens").ok()?;
-        let cached_tokens: i64 = row.try_get("cached_tokens").ok()?;
+        let usage = usage_breakdown_from_row(&row);
         Some(DashboardUpstreamStat {
             upstream_id,
             requests: i64_to_u64(requests),
             total_tokens: i64_to_u64(total_tokens),
-            cached_tokens: i64_to_u64(cached_tokens),
+            usage,
         })
     })
     .collect::<Vec<_>>();
@@ -449,7 +494,13 @@ SELECT
     WHEN input_tokens IS NOT NULL OR output_tokens IS NOT NULL THEN COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
     ELSE 0
   END), 0) AS total_tokens,
-  COALESCE(SUM(COALESCE(cached_tokens, 0)), 0) AS cached_tokens
+  COALESCE(SUM(COALESCE(uncached_input_tokens, 0)), 0) AS uncached_input_tokens,
+  COALESCE(SUM(COALESCE(cache_read_tokens, 0)), 0) AS cache_read_tokens,
+  COALESCE(SUM(COALESCE(cache_write_tokens, 0)), 0) AS cache_write_tokens,
+  COALESCE(SUM(COALESCE(cache_write_5m_tokens, 0)), 0) AS cache_write_5m_tokens,
+  COALESCE(SUM(COALESCE(cache_write_1h_tokens, 0)), 0) AS cache_write_1h_tokens,
+  COALESCE(SUM(COALESCE(image_input_tokens, 0)), 0) AS image_input_tokens,
+  COALESCE(SUM(COALESCE(image_output_tokens, 0)), 0) AS image_output_tokens
 FROM request_logs
 WHERE (?1 IS NULL OR ts_ms >= ?1)
   AND (?2 IS NULL OR ts_ms <= ?2)
@@ -470,13 +521,13 @@ ORDER BY upstream_id ASC, account_id IS NULL DESC, requests DESC, account_id ASC
         let account_id: Option<String> = row.try_get("account_id").ok()?;
         let requests: i64 = row.try_get("requests").ok()?;
         let total_tokens: i64 = row.try_get("total_tokens").ok()?;
-        let cached_tokens: i64 = row.try_get("cached_tokens").ok()?;
+        let usage = usage_breakdown_from_row(&row);
         Some(DashboardAccountStat {
             upstream_id,
             account_id,
             requests: i64_to_u64(requests),
             total_tokens: i64_to_u64(total_tokens),
-            cached_tokens: i64_to_u64(cached_tokens),
+            usage,
         })
     })
     .collect::<Vec<_>>();
@@ -501,7 +552,13 @@ SELECT
   COALESCE(SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END), 0) AS error_requests,
   COALESCE(SUM(COALESCE(input_tokens, 0)), 0) AS input_tokens,
   COALESCE(SUM(COALESCE(output_tokens, 0)), 0) AS output_tokens,
-  COALESCE(SUM(COALESCE(cached_tokens, 0)), 0) AS cached_tokens,
+  COALESCE(SUM(COALESCE(uncached_input_tokens, 0)), 0) AS uncached_input_tokens,
+  COALESCE(SUM(COALESCE(cache_read_tokens, 0)), 0) AS cache_read_tokens,
+  COALESCE(SUM(COALESCE(cache_write_tokens, 0)), 0) AS cache_write_tokens,
+  COALESCE(SUM(COALESCE(cache_write_5m_tokens, 0)), 0) AS cache_write_5m_tokens,
+  COALESCE(SUM(COALESCE(cache_write_1h_tokens, 0)), 0) AS cache_write_1h_tokens,
+  COALESCE(SUM(COALESCE(image_input_tokens, 0)), 0) AS image_input_tokens,
+  COALESCE(SUM(COALESCE(image_output_tokens, 0)), 0) AS image_output_tokens,
   COALESCE(SUM(CASE
     WHEN total_tokens IS NOT NULL THEN total_tokens
     WHEN input_tokens IS NOT NULL OR output_tokens IS NOT NULL THEN COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
@@ -533,7 +590,7 @@ ORDER BY bucket_ts_ms ASC;
         let error_requests: i64 = row.try_get("error_requests").ok()?;
         let input_tokens: i64 = row.try_get("input_tokens").ok()?;
         let output_tokens: i64 = row.try_get("output_tokens").ok()?;
-        let cached_tokens: i64 = row.try_get("cached_tokens").ok()?;
+        let usage = usage_breakdown_from_row(&row);
         let total_tokens: i64 = row.try_get("total_tokens").ok()?;
         Some(DashboardSeriesPoint {
             ts_ms: i64_to_u64(ts_ms),
@@ -541,7 +598,7 @@ ORDER BY bucket_ts_ms ASC;
             error_requests: i64_to_u64(error_requests),
             input_tokens: i64_to_u64(input_tokens),
             output_tokens: i64_to_u64(output_tokens),
-            cached_tokens: i64_to_u64(cached_tokens),
+            usage,
             total_tokens: i64_to_u64(total_tokens),
         })
     })
@@ -605,7 +662,7 @@ fn fill_series_buckets(
                 error_requests: 0,
                 input_tokens: 0,
                 output_tokens: 0,
-                cached_tokens: 0,
+                usage: DashboardUsageBreakdown::default(),
                 total_tokens: 0,
             });
         }
@@ -656,7 +713,21 @@ SELECT
     ELSE NULL
   END AS total_tokens,
   output_tokens,
-  cached_tokens,
+  CASE
+    WHEN cache_read_tokens IS NOT NULL OR cache_write_tokens IS NOT NULL
+      OR cache_write_5m_tokens IS NOT NULL OR cache_write_1h_tokens IS NOT NULL
+    THEN COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)
+      + COALESCE(cache_write_5m_tokens, 0) + COALESCE(cache_write_1h_tokens, 0)
+    ELSE NULL
+  END AS cached_tokens,
+  uncached_input_tokens,
+  cache_read_tokens,
+  cache_write_tokens,
+  cache_write_5m_tokens,
+  cache_write_1h_tokens,
+  image_input_tokens,
+  image_output_tokens,
+  service_tier,
   cost_nano_usd,
   pricing_version,
   pricing_model,
@@ -704,6 +775,14 @@ LIMIT ?3 OFFSET ?4;
         let total_tokens: Option<i64> = row.try_get("total_tokens").ok()?;
         let output_tokens: Option<i64> = row.try_get("output_tokens").ok()?;
         let cached_tokens: Option<i64> = row.try_get("cached_tokens").ok()?;
+        let uncached_input_tokens: Option<i64> = row.try_get("uncached_input_tokens").ok()?;
+        let cache_read_tokens: Option<i64> = row.try_get("cache_read_tokens").ok()?;
+        let cache_write_tokens: Option<i64> = row.try_get("cache_write_tokens").ok()?;
+        let cache_write_5m_tokens: Option<i64> = row.try_get("cache_write_5m_tokens").ok()?;
+        let cache_write_1h_tokens: Option<i64> = row.try_get("cache_write_1h_tokens").ok()?;
+        let image_input_tokens: Option<i64> = row.try_get("image_input_tokens").ok()?;
+        let image_output_tokens: Option<i64> = row.try_get("image_output_tokens").ok()?;
+        let service_tier: Option<String> = row.try_get("service_tier").ok()?;
         let cost_nano_usd: Option<i64> = row.try_get("cost_nano_usd").ok()?;
         let pricing_version: Option<String> = row.try_get("pricing_version").ok()?;
         let pricing_model: Option<String> = row.try_get("pricing_model").ok()?;
@@ -732,6 +811,14 @@ LIMIT ?3 OFFSET ?4;
             total_tokens: total_tokens.map(i64_to_u64),
             output_tokens: output_tokens.map(i64_to_u64),
             cached_tokens: cached_tokens.map(i64_to_u64),
+            uncached_input_tokens: uncached_input_tokens.map(i64_to_u64),
+            cache_read_tokens: cache_read_tokens.map(i64_to_u64),
+            cache_write_tokens: cache_write_tokens.map(i64_to_u64),
+            cache_write_5m_tokens: cache_write_5m_tokens.map(i64_to_u64),
+            cache_write_1h_tokens: cache_write_1h_tokens.map(i64_to_u64),
+            image_input_tokens: image_input_tokens.map(i64_to_u64),
+            image_output_tokens: image_output_tokens.map(i64_to_u64),
+            service_tier,
             cost_nano_usd: cost_nano_usd.map(i64_to_u64),
             pricing_version,
             pricing_model,
@@ -811,6 +898,23 @@ fn select_bucket_ms(span_ms: u64) -> u64 {
         return 24 * 60 * 60 * 1000;
     }
     7 * 24 * 60 * 60 * 1000
+}
+
+fn usage_breakdown_from_row(row: &sqlx::sqlite::SqliteRow) -> DashboardUsageBreakdown {
+    let value = |column| i64_to_u64(row.try_get::<i64, _>(column).unwrap_or(0));
+    DashboardUsageBreakdown {
+        cached_tokens: value("cache_read_tokens")
+            .saturating_add(value("cache_write_tokens"))
+            .saturating_add(value("cache_write_5m_tokens"))
+            .saturating_add(value("cache_write_1h_tokens")),
+        uncached_input_tokens: value("uncached_input_tokens"),
+        cache_read_tokens: value("cache_read_tokens"),
+        cache_write_tokens: value("cache_write_tokens"),
+        cache_write_5m_tokens: value("cache_write_5m_tokens"),
+        cache_write_1h_tokens: value("cache_write_1h_tokens"),
+        image_input_tokens: value("image_input_tokens"),
+        image_output_tokens: value("image_output_tokens"),
+    }
 }
 
 fn i64_to_u64(value: i64) -> u64 {

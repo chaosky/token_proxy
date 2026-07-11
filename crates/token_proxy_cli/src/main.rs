@@ -117,7 +117,25 @@ async fn serve(paths: token_proxy_core::paths::TokenProxyPaths) -> Result<(), St
         .await?
         .config;
     let proxy_url = token_proxy_core::proxy::config::app_proxy_url_from_config(&config_file)?;
-    token_proxy_core::app_proxy::set(&app_proxy, proxy_url).await;
+    token_proxy_core::app_proxy::set(&app_proxy, proxy_url.clone()).await;
+
+    // 价格目录刷新独立于代理启动；失败时继续使用 SQLite 缓存或内置快照。
+    let pricing_paths = paths.clone();
+    tokio::spawn(async move {
+        let result = async {
+            let pool = token_proxy_core::proxy::sqlite::open_write_pool(&pricing_paths).await?;
+            token_proxy_core::proxy::pricing::refresh_remote_model_pricing_catalog(
+                &pool,
+                proxy_url.as_deref(),
+            )
+            .await
+            .map(|_| ())
+        }
+        .await;
+        if let Err(err) = result {
+            eprintln!("model pricing catalog refresh failed: {err}");
+        }
+    });
 
     // 3) 初始化运行时依赖（尽量保持与 Tauri 侧一致，确保行为一致）
     let request_detail =

@@ -1,0 +1,851 @@
+{
+  "schemaVersion": 1,
+  "version": "catalog.e316ebf5.3a0ca530",
+  "source": {
+    "url": "https://github.com/Wei-Shaw/sub2api/blob/main/backend/resources/model-pricing/model_prices_and_context_window.json",
+    "commit": "e316ebf52838a89d57fc790981cce7520f819ac8",
+    "sha256": "3a0ca5300799607e5a7938f2670bedd8dfc861ec3659b0a6dd6662a361d089fc",
+    "commitTime": "2026-07-10T22:09:25+08:00"
+  },
+  "models": [
+    {
+      "modelId": "gpt-5.6-sol",
+      "sourceModelId": "gpt-5.6-sol",
+      "aliases": [
+        "openai/gpt-5.6-sol"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 5000,
+        "outputNanoUsdPerToken": 30000,
+        "cacheReadNanoUsdPerToken": 500,
+        "cacheWriteNanoUsdPerToken": 6250,
+        "cacheWrite5mNanoUsdPerToken": 6250,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {
+        "priority": {
+          "inputNanoUsdPerToken": 10000,
+          "outputNanoUsdPerToken": 60000,
+          "cacheReadNanoUsdPerToken": 1000,
+          "cacheWriteNanoUsdPerToken": 12500,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        },
+        "flex": {
+          "inputNanoUsdPerToken": 2500,
+          "outputNanoUsdPerToken": 15000,
+          "cacheReadNanoUsdPerToken": 250,
+          "cacheWriteNanoUsdPerToken": 3125,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        }
+      },
+      "longContext": {
+        "threshold": 272000,
+        "inputMultiplierScaled": 2000000000000,
+        "outputMultiplierScaled": 1500000000000
+      }
+    },
+    {
+      "modelId": "gpt-5.6-terra",
+      "sourceModelId": "gpt-5.6-terra",
+      "aliases": [
+        "openai/gpt-5.6-terra"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 2500,
+        "outputNanoUsdPerToken": 15000,
+        "cacheReadNanoUsdPerToken": 250,
+        "cacheWriteNanoUsdPerToken": 3125,
+        "cacheWrite5mNanoUsdPerToken": 3125,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {
+        "priority": {
+          "inputNanoUsdPerToken": 5000,
+          "outputNanoUsdPerToken": 30000,
+          "cacheReadNanoUsdPerToken": 500,
+          "cacheWriteNanoUsdPerToken": 6250,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        },
+        "flex": {
+          "inputNanoUsdPerToken": 1250,
+          "outputNanoUsdPerToken": 7500,
+          "cacheReadNanoUsdPerToken": 125,
+          "cacheWriteNanoUsdPerToken": 1563,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        }
+      },
+      "longContext": {
+        "threshold": 272000,
+        "inputMultiplierScaled": 2000000000000,
+        "outputMultiplierScaled": 1500000000000
+      }
+    },
+    {
+      "modelId": "gpt-5.6-luna",
+      "sourceModelId": "gpt-5.6-luna",
+      "aliases": [
+        "openai/gpt-5.6-luna"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 1000,
+        "outputNanoUsdPerToken": 6000,
+        "cacheReadNanoUsdPerToken": 100,
+        "cacheWriteNanoUsdPerToken": 1250,
+        "cacheWrite5mNanoUsdPerToken": 1250,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {
+        "priority": {
+          "inputNanoUsdPerToken": 2000,
+          "outputNanoUsdPerToken": 12000,
+          "cacheReadNanoUsdPerToken": 200,
+          "cacheWriteNanoUsdPerToken": 2500,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        },
+        "flex": {
+          "inputNanoUsdPerToken": 500,
+          "outputNanoUsdPerToken": 3000,
+          "cacheReadNanoUsdPerToken": 50,
+          "cacheWriteNanoUsdPerToken": 625,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        }
+      },
+      "longContext": {
+        "threshold": 272000,
+        "inputMultiplierScaled": 2000000000000,
+        "outputMultiplierScaled": 1500000000000
+      }
+    },
+    {
+      "modelId": "gpt-5.5-pro",
+      "sourceModelId": "gpt-5.5-pro",
+      "aliases": [
+        "openai/gpt-5.5-pro"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 30000,
+        "outputNanoUsdPerToken": 180000,
+        "cacheReadNanoUsdPerToken": 3000,
+        "cacheWriteNanoUsdPerToken": 5000,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {
+        "priority": {
+          "inputNanoUsdPerToken": 10000,
+          "outputNanoUsdPerToken": 60000,
+          "cacheReadNanoUsdPerToken": 1000,
+          "cacheWriteNanoUsdPerToken": 10000,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        },
+        "flex": {
+          "inputNanoUsdPerToken": 2500,
+          "outputNanoUsdPerToken": 15000,
+          "cacheReadNanoUsdPerToken": 250,
+          "cacheWriteNanoUsdPerToken": 2500,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        }
+      },
+      "longContext": {
+        "threshold": 272000,
+        "inputMultiplierScaled": 2000000000000,
+        "outputMultiplierScaled": 1500000000000
+      }
+    },
+    {
+      "modelId": "gpt-5.5",
+      "sourceModelId": "gpt-5.5",
+      "aliases": [
+        "openai/gpt-5.5",
+        "gpt-5.5-latest"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 5000,
+        "outputNanoUsdPerToken": 30000,
+        "cacheReadNanoUsdPerToken": 500,
+        "cacheWriteNanoUsdPerToken": 5000,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {
+        "priority": {
+          "inputNanoUsdPerToken": 10000,
+          "outputNanoUsdPerToken": 60000,
+          "cacheReadNanoUsdPerToken": 1000,
+          "cacheWriteNanoUsdPerToken": 10000,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        },
+        "flex": {
+          "inputNanoUsdPerToken": 2500,
+          "outputNanoUsdPerToken": 15000,
+          "cacheReadNanoUsdPerToken": 250,
+          "cacheWriteNanoUsdPerToken": 2500,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        }
+      },
+      "longContext": {
+        "threshold": 272000,
+        "inputMultiplierScaled": 2000000000000,
+        "outputMultiplierScaled": 1500000000000
+      }
+    },
+    {
+      "modelId": "gpt-5.4",
+      "sourceModelId": "gpt-5.4",
+      "aliases": [
+        "openai/gpt-5.4"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 2500,
+        "outputNanoUsdPerToken": 15000,
+        "cacheReadNanoUsdPerToken": 250,
+        "cacheWriteNanoUsdPerToken": 2500,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {
+        "priority": {
+          "inputNanoUsdPerToken": 5000,
+          "outputNanoUsdPerToken": 30000,
+          "cacheReadNanoUsdPerToken": 500,
+          "cacheWriteNanoUsdPerToken": 5000,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        },
+        "flex": {
+          "inputNanoUsdPerToken": 1250,
+          "outputNanoUsdPerToken": 7500,
+          "cacheReadNanoUsdPerToken": 125,
+          "cacheWriteNanoUsdPerToken": 1250,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        }
+      },
+      "longContext": {
+        "threshold": 272000,
+        "inputMultiplierScaled": 2000000000000,
+        "outputMultiplierScaled": 1500000000000
+      }
+    },
+    {
+      "modelId": "gpt-5.4-mini",
+      "sourceModelId": "gpt-5.4-mini",
+      "aliases": [
+        "openai/gpt-5.4-mini"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 750,
+        "outputNanoUsdPerToken": 4500,
+        "cacheReadNanoUsdPerToken": 75,
+        "cacheWriteNanoUsdPerToken": 750,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {
+        "priority": {
+          "inputNanoUsdPerToken": 1500,
+          "outputNanoUsdPerToken": 9000,
+          "cacheReadNanoUsdPerToken": 150,
+          "cacheWriteNanoUsdPerToken": 1500,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        },
+        "flex": {
+          "inputNanoUsdPerToken": 375,
+          "outputNanoUsdPerToken": 2250,
+          "cacheReadNanoUsdPerToken": 38,
+          "cacheWriteNanoUsdPerToken": 375,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        }
+      },
+      "longContext": null
+    },
+    {
+      "modelId": "claude-sonnet-5",
+      "sourceModelId": "claude-sonnet-5",
+      "aliases": [
+        "anthropic/claude-sonnet-5"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 2000,
+        "outputNanoUsdPerToken": 10000,
+        "cacheReadNanoUsdPerToken": 200,
+        "cacheWriteNanoUsdPerToken": 2500,
+        "cacheWrite5mNanoUsdPerToken": 2500,
+        "cacheWrite1hNanoUsdPerToken": 4000,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {},
+      "longContext": null
+    },
+    {
+      "modelId": "claude-fable-5",
+      "sourceModelId": "claude-fable-5",
+      "aliases": [
+        "anthropic/claude-fable-5"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 10000,
+        "outputNanoUsdPerToken": 50000,
+        "cacheReadNanoUsdPerToken": 1000,
+        "cacheWriteNanoUsdPerToken": 12500,
+        "cacheWrite5mNanoUsdPerToken": 12500,
+        "cacheWrite1hNanoUsdPerToken": 20000,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {},
+      "longContext": null
+    },
+    {
+      "modelId": "claude-sonnet-4.6",
+      "sourceModelId": "claude-sonnet-4.6",
+      "aliases": [
+        "anthropic/claude-sonnet-4.6"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 3000,
+        "outputNanoUsdPerToken": 15000,
+        "cacheReadNanoUsdPerToken": 300,
+        "cacheWriteNanoUsdPerToken": 3750,
+        "cacheWrite5mNanoUsdPerToken": 3750,
+        "cacheWrite1hNanoUsdPerToken": 6000,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {},
+      "longContext": null
+    },
+    {
+      "modelId": "claude-opus-4-8",
+      "sourceModelId": "claude-opus-4-8",
+      "aliases": [
+        "claude-opus-4.8",
+        "opus-4-8",
+        "anthropic/claude-opus-4-8",
+        "anthropic/claude-opus-4.8"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 5000,
+        "outputNanoUsdPerToken": 25000,
+        "cacheReadNanoUsdPerToken": 500,
+        "cacheWriteNanoUsdPerToken": 6250,
+        "cacheWrite5mNanoUsdPerToken": 6250,
+        "cacheWrite1hNanoUsdPerToken": 10000,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {},
+      "longContext": null
+    },
+    {
+      "modelId": "claude-opus-4-7",
+      "sourceModelId": "claude-opus-4-7",
+      "aliases": [
+        "claude-opus-4.7",
+        "opus-4-7",
+        "anthropic/claude-opus-4-7",
+        "anthropic/claude-opus-4.7"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 5000,
+        "outputNanoUsdPerToken": 25000,
+        "cacheReadNanoUsdPerToken": 500,
+        "cacheWriteNanoUsdPerToken": 6250,
+        "cacheWrite5mNanoUsdPerToken": 6250,
+        "cacheWrite1hNanoUsdPerToken": 10000,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {},
+      "longContext": null
+    },
+    {
+      "modelId": "gemini-3-flash-preview",
+      "sourceModelId": "gemini-3-flash-preview",
+      "aliases": [
+        "google/gemini-3-flash-preview",
+        "models/gemini-3-flash-preview"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 500,
+        "outputNanoUsdPerToken": 3000,
+        "cacheReadNanoUsdPerToken": 50,
+        "cacheWriteNanoUsdPerToken": 500,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {
+        "priority": {
+          "inputNanoUsdPerToken": 900,
+          "outputNanoUsdPerToken": 5400,
+          "cacheReadNanoUsdPerToken": 90
+        }
+      },
+      "longContext": null
+    },
+    {
+      "modelId": "gemini-3.5-flash",
+      "sourceModelId": "gemini-3.5-flash",
+      "aliases": [
+        "google/gemini-3.5-flash",
+        "models/gemini-3.5-flash"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 1500,
+        "outputNanoUsdPerToken": 9000,
+        "cacheReadNanoUsdPerToken": 150,
+        "cacheWriteNanoUsdPerToken": 1500,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {
+        "priority": {
+          "inputNanoUsdPerToken": 2700,
+          "outputNanoUsdPerToken": 16200,
+          "cacheReadNanoUsdPerToken": 270
+        }
+      },
+      "longContext": null
+    },
+    {
+      "modelId": "deepseek-v4-flash",
+      "sourceModelId": "deepseek-v4-flash",
+      "aliases": [
+        "deepseek/deepseek-v4-flash"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 140,
+        "outputNanoUsdPerToken": 280,
+        "cacheReadNanoUsdPerToken": 3,
+        "cacheWriteNanoUsdPerToken": 140,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {},
+      "longContext": null
+    },
+    {
+      "modelId": "deepseek-v4-pro",
+      "sourceModelId": "deepseek-v4-pro",
+      "aliases": [
+        "deepseek/deepseek-v4-pro"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 435,
+        "outputNanoUsdPerToken": 870,
+        "cacheReadNanoUsdPerToken": 4,
+        "cacheWriteNanoUsdPerToken": 435,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {},
+      "longContext": null
+    },
+    {
+      "modelId": "gpt-5.3-codex",
+      "sourceModelId": "gpt-5.3-codex",
+      "aliases": [
+        "openai/gpt-5.3-codex"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 1750,
+        "outputNanoUsdPerToken": 14000,
+        "cacheReadNanoUsdPerToken": 175,
+        "cacheWriteNanoUsdPerToken": 1750,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {
+        "priority": {
+          "inputNanoUsdPerToken": 3500,
+          "outputNanoUsdPerToken": 28000,
+          "cacheReadNanoUsdPerToken": 350,
+          "cacheWriteNanoUsdPerToken": 3500,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        },
+        "flex": {
+          "inputNanoUsdPerToken": 875,
+          "outputNanoUsdPerToken": 7000,
+          "cacheReadNanoUsdPerToken": 88,
+          "cacheWriteNanoUsdPerToken": 875,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        }
+      },
+      "longContext": null
+    },
+    {
+      "modelId": "gpt-5.2",
+      "sourceModelId": "gpt-5.2",
+      "aliases": [
+        "openai/gpt-5.2"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 1750,
+        "outputNanoUsdPerToken": 14000,
+        "cacheReadNanoUsdPerToken": 175,
+        "cacheWriteNanoUsdPerToken": 1750,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {
+        "priority": {
+          "inputNanoUsdPerToken": 3500,
+          "outputNanoUsdPerToken": 28000,
+          "cacheReadNanoUsdPerToken": 350,
+          "cacheWriteNanoUsdPerToken": 3500,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        },
+        "flex": {
+          "inputNanoUsdPerToken": 875,
+          "outputNanoUsdPerToken": 7000,
+          "cacheReadNanoUsdPerToken": 88,
+          "cacheWriteNanoUsdPerToken": 875,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        }
+      },
+      "longContext": null
+    },
+    {
+      "modelId": "gpt-5.2-codex",
+      "sourceModelId": "gpt-5.2-codex",
+      "aliases": [
+        "openai/gpt-5.2-codex"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 1750,
+        "outputNanoUsdPerToken": 14000,
+        "cacheReadNanoUsdPerToken": 175,
+        "cacheWriteNanoUsdPerToken": 1750,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {
+        "priority": {
+          "inputNanoUsdPerToken": 3500,
+          "outputNanoUsdPerToken": 28000,
+          "cacheReadNanoUsdPerToken": 350,
+          "cacheWriteNanoUsdPerToken": 3500,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        },
+        "flex": {
+          "inputNanoUsdPerToken": 875,
+          "outputNanoUsdPerToken": 7000,
+          "cacheReadNanoUsdPerToken": 88,
+          "cacheWriteNanoUsdPerToken": 875,
+          "cacheWrite5mNanoUsdPerToken": null,
+          "cacheWrite1hNanoUsdPerToken": null,
+          "imageInputNanoUsdPerToken": null,
+          "imageOutputNanoUsdPerToken": null
+        }
+      },
+      "longContext": null
+    },
+    {
+      "modelId": "kimi-k2.6",
+      "sourceModelId": "kimi-k2.6",
+      "aliases": [
+        "moonshotai/kimi-k2.6"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 750,
+        "outputNanoUsdPerToken": 3500,
+        "cacheReadNanoUsdPerToken": 150,
+        "cacheWriteNanoUsdPerToken": 750,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {},
+      "longContext": null
+    },
+    {
+      "modelId": "glm-5.2",
+      "sourceModelId": "glm-5.2",
+      "aliases": [
+        "z-ai/glm-5.2"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 1400,
+        "outputNanoUsdPerToken": 4400,
+        "cacheReadNanoUsdPerToken": 260,
+        "cacheWriteNanoUsdPerToken": 1400,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {},
+      "longContext": null
+    },
+    {
+      "modelId": "grok-4.5",
+      "sourceModelId": "grok-4.5",
+      "aliases": [
+        "grok-4.5-high",
+        "x-ai/grok-4.5",
+        "xai/grok-4.5",
+        "x-ai/grok-4.5-high",
+        "xai/grok-4.5-high"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 2000,
+        "outputNanoUsdPerToken": 6000,
+        "cacheReadNanoUsdPerToken": 500,
+        "cacheWriteNanoUsdPerToken": 2000,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {},
+      "longContext": null
+    },
+    {
+      "modelId": "grok-4.3",
+      "sourceModelId": "grok-4.3",
+      "aliases": [
+        "x-ai/grok-4.3",
+        "xai/grok-4.3"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 1250,
+        "outputNanoUsdPerToken": 2500,
+        "cacheReadNanoUsdPerToken": 200,
+        "cacheWriteNanoUsdPerToken": 1250,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {},
+      "longContext": null
+    },
+    {
+      "modelId": "grok-4.20",
+      "sourceModelId": "grok-4.20",
+      "aliases": [
+        "grok-4.20-0309",
+        "grok-4.20-0309-reasoning",
+        "grok-4.20-0309-non-reasoning",
+        "x-ai/grok-4.20",
+        "xai/grok-4.20",
+        "x-ai/grok-4.20-0309",
+        "xai/grok-4.20-0309",
+        "x-ai/grok-4.20-0309-reasoning",
+        "xai/grok-4.20-0309-reasoning",
+        "x-ai/grok-4.20-0309-non-reasoning",
+        "xai/grok-4.20-0309-non-reasoning"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 1250,
+        "outputNanoUsdPerToken": 2500,
+        "cacheReadNanoUsdPerToken": 200,
+        "cacheWriteNanoUsdPerToken": 1250,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {},
+      "longContext": null
+    },
+    {
+      "modelId": "grok-4.20-multi-agent",
+      "sourceModelId": "grok-4.20-multi-agent",
+      "aliases": [
+        "grok-4.20-multi-agent-0309",
+        "x-ai/grok-4.20-multi-agent",
+        "xai/grok-4.20-multi-agent",
+        "x-ai/grok-4.20-multi-agent-0309",
+        "xai/grok-4.20-multi-agent-0309"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 1250,
+        "outputNanoUsdPerToken": 2500,
+        "cacheReadNanoUsdPerToken": 200,
+        "cacheWriteNanoUsdPerToken": 1250,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {},
+      "longContext": null
+    },
+    {
+      "modelId": "grok-build-0.1",
+      "sourceModelId": "grok-build-0.1",
+      "aliases": [
+        "x-ai/grok-build-0.1",
+        "xai/grok-build-0.1"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 1000,
+        "outputNanoUsdPerToken": 2000,
+        "cacheReadNanoUsdPerToken": 200,
+        "cacheWriteNanoUsdPerToken": 1000,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {},
+      "longContext": null
+    },
+    {
+      "modelId": "grok-composer-2.5-fast",
+      "sourceModelId": "grok-composer-2.5-fast",
+      "aliases": [
+        "composer-2.5",
+        "x-ai/grok-composer-2.5-fast",
+        "xai/grok-composer-2.5-fast"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 1000,
+        "outputNanoUsdPerToken": 2000,
+        "cacheReadNanoUsdPerToken": 200,
+        "cacheWriteNanoUsdPerToken": 1000,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": null,
+        "imageOutputNanoUsdPerToken": null
+      },
+      "serviceTierProfiles": {},
+      "longContext": null
+    },
+    {
+      "modelId": "gpt-image-2",
+      "sourceModelId": "gpt-image-2",
+      "aliases": [
+        "openai/gpt-image-2",
+        "gpt-image-2-2026-04-21",
+        "openai/gpt-image-2-2026-04-21"
+      ],
+      "priceMultiplierScaled": 1000000000000,
+      "standard": {
+        "inputNanoUsdPerToken": 5000,
+        "outputNanoUsdPerToken": 10000,
+        "cacheReadNanoUsdPerToken": 1250,
+        "cacheWriteNanoUsdPerToken": 8000,
+        "cacheWrite5mNanoUsdPerToken": null,
+        "cacheWrite1hNanoUsdPerToken": null,
+        "imageInputNanoUsdPerToken": 8000,
+        "imageOutputNanoUsdPerToken": 30000
+      },
+      "serviceTierProfiles": {},
+      "longContext": null
+    }
+  ]
+}

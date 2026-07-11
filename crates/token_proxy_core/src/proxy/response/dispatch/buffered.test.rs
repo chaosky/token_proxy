@@ -205,6 +205,58 @@ fn buffer_event_stream_response_synthesizes_response_from_done_item() {
     assert_eq!(value["output"][0]["name"], json!("AgentOutput"));
 }
 
+#[test]
+fn buffer_event_stream_response_restores_raw_compaction_items_when_terminal_output_is_absent() {
+    let raw_item = json!({
+        "type": "compaction",
+        "id": "cmp_raw",
+        "encrypted_content": "encrypted-raw",
+        "opaque_payload": { "revision": 2 }
+    });
+    let summary_item = json!({
+        "type": "compaction_summary",
+        "id": "cmp_summary",
+        "encrypted_content": "encrypted-summary",
+        "summary": [{ "type": "summary_text", "text": "compact context" }]
+    });
+
+    for terminal_response in [
+        json!({
+            "id": "resp_compact",
+            "object": "response",
+            "status": "completed",
+            "model": "gpt-5.6-sol",
+            "output": []
+        }),
+        json!({
+            "id": "resp_compact",
+            "object": "response",
+            "status": "completed",
+            "model": "gpt-5.6-sol"
+        }),
+    ] {
+        let sse = Bytes::from(format!(
+            "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            json!({
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": raw_item
+            }),
+            json!({
+                "type": "response.output_item.done",
+                "output_index": 1,
+                "item": summary_item
+            }),
+            json!({ "type": "response.completed", "response": terminal_response })
+        ));
+
+        let output = buffer_event_stream_response(&sse).expect("buffer compact SSE");
+        let value: serde_json::Value = serde_json::from_slice(&output).expect("json");
+
+        assert_eq!(value["output"], json!([raw_item, summary_item]));
+    }
+}
+
 #[tokio::test]
 async fn buffered_non_stream_event_stream_chat_completion_returns_json() {
     let sse = [

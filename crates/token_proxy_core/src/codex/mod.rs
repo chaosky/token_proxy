@@ -1,10 +1,15 @@
 mod error;
+mod identity;
 mod login;
 mod oauth;
 mod quota;
 mod store;
 mod types;
 
+pub(crate) use identity::{
+    enforce_minimum_client_version, is_official_originator, official_originator_from_user_agent,
+    supported_official_user_agent, DEFAULT_ORIGINATOR, USER_AGENT,
+};
 pub use login::CodexLoginManager;
 pub use oauth::CodexRefreshTokenClient;
 pub use quota::fetch_quotas;

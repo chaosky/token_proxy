@@ -3557,7 +3557,7 @@ fn codex_models_manifest_is_forwarded_with_oauth_headers_and_etag() {
             Some("chatgpt-account")
         );
         assert_eq!(request.accept.as_deref(), Some("application/json"));
-        assert_eq!(request.version.as_deref(), Some("0.137.0"));
+        assert_eq!(request.version.as_deref(), Some("0.144.1"));
         assert_eq!(request.if_none_match.as_deref(), Some("W/\"old\""));
     });
 }

@@ -94,7 +94,14 @@ CREATE TABLE IF NOT EXISTS request_logs (
   input_tokens INTEGER,
   output_tokens INTEGER,
   total_tokens INTEGER,
-  cached_tokens INTEGER,
+  uncached_input_tokens INTEGER,
+  cache_read_tokens INTEGER,
+  cache_write_tokens INTEGER,
+  cache_write_5m_tokens INTEGER,
+  cache_write_1h_tokens INTEGER,
+  image_input_tokens INTEGER,
+  image_output_tokens INTEGER,
+  service_tier TEXT,
   usage_json TEXT,
   upstream_request_id TEXT,
   request_headers TEXT,
@@ -204,11 +211,60 @@ async fn ensure_request_logs_columns(pool: &SqlitePool) -> Result<(), String> {
         .filter_map(|row| row.try_get::<String, _>("name").ok())
         .collect::<std::collections::HashSet<_>>();
 
-    if !columns.contains("cached_tokens") {
-        sqlx::query("ALTER TABLE request_logs ADD COLUMN cached_tokens INTEGER;")
+    if !columns.contains("cache_read_tokens") {
+        sqlx::query("ALTER TABLE request_logs ADD COLUMN cache_read_tokens INTEGER;")
             .execute(pool)
             .await
-            .map_err(|err| format!("Failed to add cached_tokens column: {err}"))?;
+            .map_err(|err| format!("Failed to add cache_read_tokens column: {err}"))?;
+    }
+
+    if !columns.contains("uncached_input_tokens") {
+        sqlx::query("ALTER TABLE request_logs ADD COLUMN uncached_input_tokens INTEGER;")
+            .execute(pool)
+            .await
+            .map_err(|err| format!("Failed to add uncached_input_tokens column: {err}"))?;
+    }
+
+    if !columns.contains("cache_write_tokens") {
+        sqlx::query("ALTER TABLE request_logs ADD COLUMN cache_write_tokens INTEGER;")
+            .execute(pool)
+            .await
+            .map_err(|err| format!("Failed to add cache_write_tokens column: {err}"))?;
+    }
+
+    if !columns.contains("cache_write_5m_tokens") {
+        sqlx::query("ALTER TABLE request_logs ADD COLUMN cache_write_5m_tokens INTEGER;")
+            .execute(pool)
+            .await
+            .map_err(|err| format!("Failed to add cache_write_5m_tokens column: {err}"))?;
+    }
+
+    if !columns.contains("cache_write_1h_tokens") {
+        sqlx::query("ALTER TABLE request_logs ADD COLUMN cache_write_1h_tokens INTEGER;")
+            .execute(pool)
+            .await
+            .map_err(|err| format!("Failed to add cache_write_1h_tokens column: {err}"))?;
+    }
+
+    if !columns.contains("image_input_tokens") {
+        sqlx::query("ALTER TABLE request_logs ADD COLUMN image_input_tokens INTEGER;")
+            .execute(pool)
+            .await
+            .map_err(|err| format!("Failed to add image_input_tokens column: {err}"))?;
+    }
+
+    if !columns.contains("image_output_tokens") {
+        sqlx::query("ALTER TABLE request_logs ADD COLUMN image_output_tokens INTEGER;")
+            .execute(pool)
+            .await
+            .map_err(|err| format!("Failed to add image_output_tokens column: {err}"))?;
+    }
+
+    if !columns.contains("service_tier") {
+        sqlx::query("ALTER TABLE request_logs ADD COLUMN service_tier TEXT;")
+            .execute(pool)
+            .await
+            .map_err(|err| format!("Failed to add service_tier column: {err}"))?;
     }
 
     if !columns.contains("client_ip") {
@@ -474,12 +530,20 @@ mod tests {
         assert!(columns.contains("first_client_flush_ms"));
         assert!(columns.contains("first_output_ms"));
         assert!(columns.contains("cost_nano_usd"));
+        assert!(columns.contains("cache_read_tokens"));
+        assert!(columns.contains("cache_write_tokens"));
+        assert!(columns.contains("uncached_input_tokens"));
+        assert!(columns.contains("cache_write_5m_tokens"));
+        assert!(columns.contains("cache_write_1h_tokens"));
+        assert!(columns.contains("image_input_tokens"));
+        assert!(columns.contains("image_output_tokens"));
+        assert!(columns.contains("service_tier"));
         assert!(columns.contains("pricing_version"));
         assert!(columns.contains("pricing_model"));
         assert!(columns.contains("pricing_context_tier"));
 
         let pricing_table = sqlx::query(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'model_pricing_settings';",
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'model_pricing_catalog_cache';",
         )
         .fetch_optional(&pool)
         .await
@@ -510,7 +574,13 @@ INSERT INTO request_logs (
   input_tokens,
   output_tokens,
   total_tokens,
-  cached_tokens,
+  uncached_input_tokens,
+  cache_read_tokens,
+  cache_write_tokens,
+  cache_write_5m_tokens,
+  cache_write_1h_tokens,
+  image_input_tokens,
+  image_output_tokens,
   latency_ms,
   pricing_version
 ) VALUES (
@@ -525,7 +595,13 @@ INSERT INTO request_logs (
   1000000,
   10000,
   1010000,
+  800000,
   200000,
+  0,
+  0,
+  0,
+  0,
+  0,
   30,
   'old'
 );
@@ -554,7 +630,11 @@ LIMIT 1;
         );
         assert_eq!(
             row.try_get::<String, _>("pricing_version").ok().as_deref(),
-            Some(crate::proxy::pricing::DEFAULT_PRICING_VERSION)
+            Some(
+                crate::proxy::pricing::default_model_pricing_settings()
+                    .version
+                    .as_str()
+            )
         );
         assert_eq!(
             row.try_get::<String, _>("pricing_model").ok().as_deref(),

@@ -430,6 +430,48 @@ async fn json_transform_pipeline_applies_reasoning_filters_and_role_rewrite_toge
 }
 
 #[tokio::test]
+async fn openai_responses_grok_reasoning_effort_is_preserved() {
+    let upstream = test_upstream(false, false, false);
+    let meta = RequestMeta {
+        client_ip: None,
+        stream: true,
+        original_model: Some("grok-4.20".to_string()),
+        mapped_model: Some("grok-4.20".to_string()),
+        reasoning_effort: Some("high".to_string()),
+        response_format: None,
+        estimated_input_tokens: None,
+    };
+    let body = ReplayableBody::from_bytes(Bytes::from_static(
+        br#"{"model":"grok-4.20","input":"hi","reasoning":{"effort":"high","summary":"auto"}}"#,
+    ));
+
+    let rewritten = match build_json_transformed_body(
+        "openai-response",
+        &upstream,
+        "/v1/responses",
+        &body,
+        &meta,
+        None,
+    )
+    .await
+    {
+        Ok(Some(value)) => value,
+        Ok(None) => panic!("Grok effort should remain in outgoing body"),
+        Err(_) => panic!("transform result"),
+    };
+    let bytes = rewritten
+        .read_bytes_if_small(1024)
+        .await
+        .expect("read rewritten bytes")
+        .expect("rewritten body exists");
+    let value: Value = serde_json::from_slice(&bytes).expect("json");
+
+    assert_eq!(value["model"], "grok-4.20");
+    assert_eq!(value["reasoning"]["effort"], "high");
+    assert_eq!(value["reasoning"]["summary"], "auto");
+}
+
+#[tokio::test]
 async fn openai_chat_reasoning_effort_normalizes_glm_xhigh_to_max() {
     let upstream = test_upstream(false, false, false);
     let meta = RequestMeta {

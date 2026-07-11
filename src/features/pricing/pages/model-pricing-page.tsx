@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { Plus, RefreshCw, RotateCcw, Save, Trash2 } from "lucide-react";
+import {
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Save,
+  SlidersHorizontal,
+  Trash2,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -22,7 +29,15 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
   Table,
@@ -32,7 +47,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { AppShell } from "@/layouts/app-shell";
 import {
   readModelPricingSettings,
   resetModelPricingSettings,
@@ -40,19 +54,22 @@ import {
 } from "@/features/pricing/api";
 import {
   createEmptyPricingRow,
+  createEmptyProfileForm,
   toPricingRows,
   toPricingSettingsInput,
   type ModelPricingFormRow,
+  type ModelPricingProfileForm,
 } from "@/features/pricing/form";
+import type { ModelPricingSettings } from "@/features/pricing/types";
+import { AppShell } from "@/layouts/app-shell";
 import { parseError } from "@/lib/error";
 import { m } from "@/paraglide/messages.js";
 
 type LoadStatus = "loading" | "idle" | "saving";
 
-const TABLE_MIN_WIDTH_CLASS = "min-w-[84rem]";
 const STICKY_HEAD_CLASS = "sticky top-0 z-20 bg-background/95 backdrop-blur-xs";
 const STICKY_ACTION_CLASS =
-  "sticky right-0 z-10 w-[4.5rem] border-l border-border/40 bg-background/95 text-right backdrop-blur-xs group-hover:bg-muted/50";
+  "sticky right-0 z-10 w-[6rem] border-l border-border/40 bg-background/95 text-right backdrop-blur-xs group-hover:bg-muted/50";
 
 type PriceInputProps = {
   value: string;
@@ -74,6 +91,232 @@ function PriceInput({ value, ariaLabel, disabled, onChange }: PriceInputProps) {
   );
 }
 
+type ProfileEditorProps = {
+  profile: ModelPricingProfileForm;
+  disabled: boolean;
+  onChange: (profile: ModelPricingProfileForm) => void;
+};
+
+function ProfileEditor({ profile, disabled, onChange }: ProfileEditorProps) {
+  const fields: Array<{
+    key: keyof ModelPricingProfileForm;
+    label: string;
+  }> = [
+    { key: "input", label: m.model_pricing_column_standard_input() },
+    { key: "cacheRead", label: m.model_pricing_column_cache_read() },
+    { key: "cacheWrite", label: m.model_pricing_column_cache_write() },
+    { key: "output", label: m.model_pricing_column_standard_output() },
+    { key: "cacheWrite5m", label: m.model_pricing_cache_write_5m() },
+    { key: "cacheWrite1h", label: m.model_pricing_cache_write_1h() },
+    { key: "imageInput", label: m.model_pricing_image_input() },
+    { key: "imageOutput", label: m.model_pricing_image_output() },
+  ];
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {fields.map((field) => (
+        <div key={field.key} className="grid gap-1.5">
+          <Label>{field.label}</Label>
+          <PriceInput
+            value={profile[field.key]}
+            ariaLabel={field.label}
+            disabled={disabled}
+            onChange={(value) => onChange({ ...profile, [field.key]: value })}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+type AdvancedPricingDialogProps = {
+  row: ModelPricingFormRow;
+  disabled: boolean;
+  onChange: (patch: Partial<ModelPricingFormRow>) => void;
+};
+
+function AdvancedPricingDialog({
+  row,
+  disabled,
+  onChange,
+}: AdvancedPricingDialogProps) {
+  const tierEntries = Object.entries(row.serviceTierProfiles);
+
+  const addTier = () => {
+    const preferredNames = ["priority", "flex"];
+    const tier =
+      preferredNames.find((name) => !row.serviceTierProfiles[name]) ??
+      `tier-${tierEntries.length + 1}`;
+    onChange({
+      serviceTierProfiles: {
+        ...row.serviceTierProfiles,
+        [tier]: createEmptyProfileForm(),
+      },
+    });
+  };
+
+  const renameTier = (current: string, next: string) => {
+    const profiles = { ...row.serviceTierProfiles };
+    const profile = profiles[current];
+    delete profiles[current];
+    profiles[next] = profile;
+    onChange({ serviceTierProfiles: profiles });
+  };
+
+  const updateTier = (tier: string, profile: ModelPricingProfileForm) => {
+    onChange({
+      serviceTierProfiles: { ...row.serviceTierProfiles, [tier]: profile },
+    });
+  };
+
+  const removeTier = (tier: string) => {
+    const profiles = { ...row.serviceTierProfiles };
+    delete profiles[tier];
+    onChange({ serviceTierProfiles: profiles });
+  };
+
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          disabled={disabled}
+          title={m.model_pricing_advanced()}
+        >
+          <SlidersHorizontal aria-hidden="true" />
+          <span className="sr-only">{m.model_pricing_advanced()}</span>
+        </Button>
+      </DialogTrigger>
+      <DialogContent
+        className="max-h-[85vh] max-w-5xl overflow-y-auto"
+        aria-describedby={undefined}
+      >
+        <DialogHeader>
+          <DialogTitle>
+            {row.modelId.trim() || m.model_pricing_advanced()}
+          </DialogTitle>
+        </DialogHeader>
+
+        <section className="grid gap-3 border-t pt-4">
+          <h3 className="text-sm font-medium">{m.model_pricing_advanced()}</h3>
+          <ProfileEditor
+            profile={row.standard}
+            disabled={disabled}
+            onChange={(standard) => onChange({ standard })}
+          />
+        </section>
+
+        <section className="grid gap-3 border-t pt-4">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-medium">
+              {m.model_pricing_column_long_enabled()}
+            </h3>
+            <Switch
+              checked={row.longContext.enabled}
+              disabled={disabled}
+              aria-label={m.model_pricing_column_long_enabled()}
+              onCheckedChange={(enabled) =>
+                onChange({ longContext: { ...row.longContext, enabled } })
+              }
+            />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="grid gap-1.5">
+              <Label>{m.model_pricing_column_long_threshold()}</Label>
+              <Input
+                value={row.longContext.threshold}
+                inputMode="numeric"
+                disabled={disabled || !row.longContext.enabled}
+                onChange={(event) =>
+                  onChange({
+                    longContext: {
+                      ...row.longContext,
+                      threshold: event.target.value,
+                    },
+                  })
+                }
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label>{m.model_pricing_long_input_multiplier()}</Label>
+              <PriceInput
+                value={row.longContext.inputMultiplier}
+                ariaLabel={m.model_pricing_long_input_multiplier()}
+                disabled={disabled || !row.longContext.enabled}
+                onChange={(inputMultiplier) =>
+                  onChange({
+                    longContext: { ...row.longContext, inputMultiplier },
+                  })
+                }
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label>{m.model_pricing_long_output_multiplier()}</Label>
+              <PriceInput
+                value={row.longContext.outputMultiplier}
+                ariaLabel={m.model_pricing_long_output_multiplier()}
+                disabled={disabled || !row.longContext.enabled}
+                onChange={(outputMultiplier) =>
+                  onChange({
+                    longContext: { ...row.longContext, outputMultiplier },
+                  })
+                }
+              />
+            </div>
+          </div>
+        </section>
+
+        <section className="grid gap-3 border-t pt-4">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-medium">
+              {m.model_pricing_service_tiers()}
+            </h3>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={disabled}
+              onClick={addTier}
+            >
+              <Plus aria-hidden="true" />
+              {m.model_pricing_add_service_tier()}
+            </Button>
+          </div>
+          {tierEntries.map(([tier, profile]) => (
+            <div key={tier} className="grid gap-3 border-t pt-3">
+              <div className="flex items-center gap-2">
+                <Input
+                  value={tier}
+                  disabled={disabled}
+                  aria-label={m.model_pricing_service_tier()}
+                  className="h-8 max-w-48"
+                  onChange={(event) => renameTier(tier, event.target.value)}
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  disabled={disabled}
+                  title={m.model_pricing_remove_model({ model: tier })}
+                  onClick={() => removeTier(tier)}
+                >
+                  <Trash2 aria-hidden="true" />
+                </Button>
+              </div>
+              <ProfileEditor
+                profile={profile}
+                disabled={disabled}
+                onChange={(nextProfile) => updateTier(tier, nextProfile)}
+              />
+            </div>
+          ))}
+        </section>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 type ModelPricingRowProps = {
   row: ModelPricingFormRow;
   disabled: boolean;
@@ -87,7 +330,14 @@ function ModelPricingRow({
   onChange,
   onRemove,
 }: ModelPricingRowProps) {
-  const modelLabel = row.modelId.trim() || m.model_pricing_column_model();
+  const updateStandard = (
+    field: keyof Pick<
+      ModelPricingProfileForm,
+      "input" | "cacheRead" | "cacheWrite" | "output"
+    >,
+    value: string,
+  ) => onChange(row.id, { standard: { ...row.standard, [field]: value } });
+
   return (
     <TableRow className="group">
       <TableCell className="min-w-[150px]">
@@ -114,93 +364,59 @@ function ModelPricingRow({
           value={row.priceMultiplier}
           ariaLabel={m.model_pricing_column_multiplier()}
           disabled={disabled}
-          onChange={(value) => onChange(row.id, { priceMultiplier: value })}
+          onChange={(priceMultiplier) => onChange(row.id, { priceMultiplier })}
         />
       </TableCell>
       <TableCell>
         <PriceInput
-          value={row.shortInputUsdPerMillion}
-          ariaLabel={m.model_pricing_column_short_input()}
+          value={row.standard.input}
+          ariaLabel={m.model_pricing_column_standard_input()}
           disabled={disabled}
-          onChange={(value) => onChange(row.id, { shortInputUsdPerMillion: value })}
+          onChange={(value) => updateStandard("input", value)}
         />
       </TableCell>
       <TableCell>
         <PriceInput
-          value={row.shortCachedUsdPerMillion}
-          ariaLabel={m.model_pricing_column_short_cached()}
+          value={row.standard.cacheRead}
+          ariaLabel={m.model_pricing_column_cache_read()}
           disabled={disabled}
-          onChange={(value) => onChange(row.id, { shortCachedUsdPerMillion: value })}
+          onChange={(value) => updateStandard("cacheRead", value)}
         />
       </TableCell>
       <TableCell>
         <PriceInput
-          value={row.shortOutputUsdPerMillion}
-          ariaLabel={m.model_pricing_column_short_output()}
+          value={row.standard.cacheWrite}
+          ariaLabel={m.model_pricing_column_cache_write()}
           disabled={disabled}
-          onChange={(value) => onChange(row.id, { shortOutputUsdPerMillion: value })}
+          onChange={(value) => updateStandard("cacheWrite", value)}
         />
       </TableCell>
       <TableCell>
-        <Switch
-          checked={row.longEnabled}
+        <PriceInput
+          value={row.standard.output}
+          ariaLabel={m.model_pricing_column_standard_output()}
           disabled={disabled}
-          aria-label={m.model_pricing_column_long_enabled()}
-          onCheckedChange={(longEnabled) => onChange(row.id, { longEnabled })}
-        />
-      </TableCell>
-      <TableCell>
-        <Input
-          value={row.longContextInputTokenThreshold}
-          inputMode="numeric"
-          aria-label={m.model_pricing_column_long_threshold()}
-          disabled={disabled || !row.longEnabled}
-          className="h-8 min-w-[96px] text-right tabular-nums"
-          onChange={(event) =>
-            onChange(row.id, {
-              longContextInputTokenThreshold: event.target.value,
-            })
-          }
-        />
-      </TableCell>
-      <TableCell>
-        <PriceInput
-          value={row.longInputUsdPerMillion}
-          ariaLabel={m.model_pricing_column_long_input()}
-          disabled={disabled || !row.longEnabled}
-          onChange={(value) => onChange(row.id, { longInputUsdPerMillion: value })}
-        />
-      </TableCell>
-      <TableCell>
-        <PriceInput
-          value={row.longCachedUsdPerMillion}
-          ariaLabel={m.model_pricing_column_long_cached()}
-          disabled={disabled || !row.longEnabled}
-          onChange={(value) => onChange(row.id, { longCachedUsdPerMillion: value })}
-        />
-      </TableCell>
-      <TableCell>
-        <PriceInput
-          value={row.longOutputUsdPerMillion}
-          ariaLabel={m.model_pricing_column_long_output()}
-          disabled={disabled || !row.longEnabled}
-          onChange={(value) => onChange(row.id, { longOutputUsdPerMillion: value })}
+          onChange={(value) => updateStandard("output", value)}
         />
       </TableCell>
       <TableCell className={STICKY_ACTION_CLASS}>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          disabled={disabled}
-          title={m.model_pricing_remove_model({ model: modelLabel })}
-          onClick={() => onRemove(row.id)}
-        >
-          <Trash2 aria-hidden="true" />
-          <span className="sr-only">
-            {m.model_pricing_remove_model({ model: modelLabel })}
-          </span>
-        </Button>
+        <div className="flex justify-end gap-1">
+          <AdvancedPricingDialog
+            row={row}
+            disabled={disabled}
+            onChange={(patch) => onChange(row.id, patch)}
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            disabled={disabled}
+            title={m.model_pricing_remove_model({ model: row.modelId })}
+            onClick={() => onRemove(row.id)}
+          >
+            <Trash2 aria-hidden="true" />
+          </Button>
+        </div>
       </TableCell>
     </TableRow>
   );
@@ -209,31 +425,30 @@ function ModelPricingRow({
 export function ModelPricingPage() {
   const [rows, setRows] = useState<ModelPricingFormRow[]>([]);
   const [version, setVersion] = useState("");
+  const [sourceCommit, setSourceCommit] = useState("");
   const [status, setStatus] = useState<LoadStatus>("loading");
-  const disabled = status === "loading" || status === "saving";
-  const canSave = !disabled;
+  const disabled = status !== "idle";
 
-  const applyRows = useCallback((nextRows: ModelPricingFormRow[], nextVersion: string) => {
-    setRows(nextRows);
-    setVersion(nextVersion);
+  const applySnapshot = useCallback((settings: ModelPricingSettings) => {
+      setRows(toPricingRows(settings));
+      setVersion(settings.version);
+      setSourceCommit(settings.source?.commit.slice(0, 8) ?? "");
   }, []);
 
   const loadSettings = useCallback(async () => {
     setStatus("loading");
     try {
       const snapshot = await readModelPricingSettings();
-      applyRows(toPricingRows(snapshot.settings), snapshot.settings.version);
-      setStatus("idle");
+      applySnapshot(snapshot.settings);
     } catch (error) {
-      setStatus("idle");
       toast.error(`${m.model_pricing_load_failed()}：${parseError(error)}`);
+    } finally {
+      setStatus("idle");
     }
-  }, [applyRows]);
+  }, [applySnapshot]);
 
   useEffect(() => {
-    const timerId = window.setTimeout(() => {
-      void loadSettings();
-    }, 0);
+    const timerId = window.setTimeout(() => void loadSettings(), 0);
     return () => window.clearTimeout(timerId);
   }, [loadSettings]);
 
@@ -246,14 +461,6 @@ export function ModelPricingPage() {
     [],
   );
 
-  const removeRow = useCallback((id: string) => {
-    setRows((current) => current.filter((row) => row.id !== id));
-  }, []);
-
-  const addRow = useCallback(() => {
-    setRows((current) => [...current, createEmptyPricingRow()]);
-  }, []);
-
   const saveRows = useCallback(async () => {
     const next = toPricingSettingsInput(rows);
     if (!next.ok) {
@@ -263,27 +470,27 @@ export function ModelPricingPage() {
     setStatus("saving");
     try {
       const snapshot = await saveModelPricingSettings(next.input);
-      applyRows(toPricingRows(snapshot.settings), snapshot.settings.version);
-      setStatus("idle");
+      applySnapshot(snapshot.settings);
       toast.success(m.model_pricing_saved());
     } catch (error) {
-      setStatus("idle");
       toast.error(`${m.model_pricing_save_failed()}：${parseError(error)}`);
+    } finally {
+      setStatus("idle");
     }
-  }, [applyRows, rows]);
+  }, [applySnapshot, rows]);
 
   const resetRows = useCallback(async () => {
     setStatus("saving");
     try {
       const snapshot = await resetModelPricingSettings();
-      applyRows(toPricingRows(snapshot.settings), snapshot.settings.version);
-      setStatus("idle");
+      applySnapshot(snapshot.settings);
       toast.success(m.model_pricing_reset_done());
     } catch (error) {
-      setStatus("idle");
       toast.error(`${m.model_pricing_reset_failed()}：${parseError(error)}`);
+    } finally {
+      setStatus("idle");
     }
-  }, [applyRows]);
+  }, [applySnapshot]);
 
   return (
     <AppShell title={m.model_pricing_title()}>
@@ -299,6 +506,11 @@ export function ModelPricingPage() {
                 {version ? (
                   <Badge variant="outline">
                     {m.model_pricing_version({ version })}
+                  </Badge>
+                ) : null}
+                {sourceCommit ? (
+                  <Badge variant="secondary">
+                    {m.model_pricing_source_commit({ commit: sourceCommit })}
                   </Badge>
                 ) : null}
                 <Badge variant="secondary">{m.model_pricing_price_unit()}</Badge>
@@ -317,7 +529,6 @@ export function ModelPricingPage() {
                   className={status === "loading" ? "animate-spin" : undefined}
                   aria-hidden="true"
                 />
-                <span className="sr-only">{m.common_refresh()}</span>
               </Button>
               <AlertDialog>
                 <AlertDialogTrigger asChild>
@@ -329,7 +540,6 @@ export function ModelPricingPage() {
                     title={m.model_pricing_reset()}
                   >
                     <RotateCcw aria-hidden="true" />
-                    <span className="sr-only">{m.model_pricing_reset()}</span>
                   </Button>
                 </AlertDialogTrigger>
                 <AlertDialogContent>
@@ -352,23 +562,19 @@ export function ModelPricingPage() {
               <Button
                 type="button"
                 variant="outline"
-                onClick={addRow}
                 disabled={disabled}
+                onClick={() => setRows((current) => [...current, createEmptyPricingRow()])}
               >
                 <Plus aria-hidden="true" />
                 {m.model_pricing_add_model()}
               </Button>
-              <Button
-                type="button"
-                onClick={() => void saveRows()}
-                disabled={!canSave}
-              >
+              <Button type="button" disabled={disabled} onClick={() => void saveRows()}>
                 <Save aria-hidden="true" />
                 {m.model_pricing_save()}
               </Button>
             </CardAction>
           </CardHeader>
-          <CardContent className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-0">
+          <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
             {status === "loading" && rows.length === 0 ? (
               <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
                 {m.model_pricing_loading()}
@@ -382,61 +588,49 @@ export function ModelPricingPage() {
                 data-slot="model-pricing-table-viewport"
                 className="min-h-0 flex-1 overflow-auto"
               >
-              <Table className={`${TABLE_MIN_WIDTH_CLASS} border-collapse`}>
-                <TableHeader className="[&_tr]:border-b-0">
-                  <TableRow>
-                    <TableHead className={`${STICKY_HEAD_CLASS} w-[10rem]`}>
-                      {m.model_pricing_column_model()}
-                    </TableHead>
-                    <TableHead className={`${STICKY_HEAD_CLASS} w-[17rem]`}>
-                      {m.model_pricing_column_aliases()}
-                    </TableHead>
-                    <TableHead className={`${STICKY_HEAD_CLASS} text-right`}>
-                      {m.model_pricing_column_multiplier()}
-                    </TableHead>
-                    <TableHead className={`${STICKY_HEAD_CLASS} text-right`}>
-                      {m.model_pricing_column_short_input()}
-                    </TableHead>
-                    <TableHead className={`${STICKY_HEAD_CLASS} text-right`}>
-                      {m.model_pricing_column_short_cached()}
-                    </TableHead>
-                    <TableHead className={`${STICKY_HEAD_CLASS} text-right`}>
-                      {m.model_pricing_column_short_output()}
-                    </TableHead>
-                    <TableHead className={STICKY_HEAD_CLASS}>
-                      {m.model_pricing_column_long_enabled()}
-                    </TableHead>
-                    <TableHead className={`${STICKY_HEAD_CLASS} text-right`}>
-                      {m.model_pricing_column_long_threshold()}
-                    </TableHead>
-                    <TableHead className={`${STICKY_HEAD_CLASS} text-right`}>
-                      {m.model_pricing_column_long_input()}
-                    </TableHead>
-                    <TableHead className={`${STICKY_HEAD_CLASS} text-right`}>
-                      {m.model_pricing_column_long_cached()}
-                    </TableHead>
-                    <TableHead className={`${STICKY_HEAD_CLASS} text-right`}>
-                      {m.model_pricing_column_long_output()}
-                    </TableHead>
-                    <TableHead
-                      className={`${STICKY_HEAD_CLASS} right-0 z-30 w-[4.5rem] border-l border-border/40 text-right`}
-                    >
-                      {m.model_pricing_column_actions()}
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {rows.map((row) => (
-                    <ModelPricingRow
-                      key={row.id}
-                      row={row}
-                      disabled={disabled}
-                      onChange={updateRow}
-                      onRemove={removeRow}
-                    />
-                  ))}
-                </TableBody>
-              </Table>
+                <Table className="min-w-[72rem] border-collapse">
+                  <TableHeader className="[&_tr]:border-b-0">
+                    <TableRow>
+                      <TableHead className={`${STICKY_HEAD_CLASS} w-[10rem]`}>
+                        {m.model_pricing_column_model()}
+                      </TableHead>
+                      <TableHead className={`${STICKY_HEAD_CLASS} w-[17rem]`}>
+                        {m.model_pricing_column_aliases()}
+                      </TableHead>
+                      <TableHead className={`${STICKY_HEAD_CLASS} text-right`}>
+                        {m.model_pricing_column_multiplier()}
+                      </TableHead>
+                      <TableHead className={`${STICKY_HEAD_CLASS} text-right`}>
+                        {m.model_pricing_column_standard_input()}
+                      </TableHead>
+                      <TableHead className={`${STICKY_HEAD_CLASS} text-right`}>
+                        {m.model_pricing_column_cache_read()}
+                      </TableHead>
+                      <TableHead className={`${STICKY_HEAD_CLASS} text-right`}>
+                        {m.model_pricing_column_cache_write()}
+                      </TableHead>
+                      <TableHead className={`${STICKY_HEAD_CLASS} text-right`}>
+                        {m.model_pricing_column_standard_output()}
+                      </TableHead>
+                      <TableHead className={`${STICKY_HEAD_CLASS} right-0 text-right`}>
+                        {m.model_pricing_column_actions()}
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {rows.map((row) => (
+                      <ModelPricingRow
+                        key={row.id}
+                        row={row}
+                        disabled={disabled}
+                        onChange={updateRow}
+                        onRemove={(id) =>
+                          setRows((current) => current.filter((item) => item.id !== id))
+                        }
+                      />
+                    ))}
+                  </TableBody>
+                </Table>
               </div>
             )}
           </CardContent>

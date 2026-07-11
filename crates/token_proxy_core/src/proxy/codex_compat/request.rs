@@ -204,15 +204,36 @@ fn resolve_reasoning_effort(object: &Map<String, Value>, model: Option<&str>) ->
 }
 
 fn parse_effort_suffix(model: &str) -> Option<String> {
-    let (base, effort) = model.rsplit_once("-reasoning-")?;
-    if base.trim().is_empty() {
-        return None;
+    if let Some((base, effort)) = model.rsplit_once("-reasoning-") {
+        if base.trim().is_empty() {
+            return None;
+        }
+        let effort = effort.trim().to_ascii_lowercase();
+        return (!effort.is_empty()).then_some(effort);
     }
-    let effort = effort.trim().to_ascii_lowercase();
-    if effort.is_empty() {
-        return None;
+
+    parse_gpt_5_6_effort_suffix(model)
+}
+
+fn parse_gpt_5_6_effort_suffix(model: &str) -> Option<String> {
+    let model = model.trim().rsplit('/').next()?.trim().to_ascii_lowercase();
+    for prefix in [
+        "gpt-5.6-sol-",
+        "gpt-5.6-terra-",
+        "gpt-5.6-luna-",
+        "gpt-5.6-",
+    ] {
+        let Some(effort) = model.strip_prefix(prefix) else {
+            continue;
+        };
+        if matches!(
+            effort,
+            "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+        ) {
+            return Some(effort.to_string());
+        }
     }
-    Some(effort)
+    None
 }
 
 fn build_tool_name_map(object: &Map<String, Value>) -> ToolNameMap {
@@ -508,14 +529,21 @@ fn normalize_responses_payload(
     strip_reasoning_include: bool,
     prompt_cache_key: Option<&str>,
 ) {
-    let model = object
+    let requested_model = object
         .get("model")
         .and_then(Value::as_str)
         .filter(|_| model_hint.is_none())
         .or(model_hint)
         .unwrap_or_default();
-    let model = normalize_codex_model(model);
+    let inferred_effort = parse_gpt_5_6_effort_suffix(requested_model);
+    let model = normalize_codex_model(requested_model);
     object.insert("model".to_string(), Value::String(model.clone()));
+    normalize_gpt_5_6_reasoning_effort(
+        object,
+        &model,
+        inferred_effort.as_deref(),
+        strip_reasoning_include,
+    );
     if !object.contains_key("parallel_tool_calls") {
         object.insert("parallel_tool_calls".to_string(), Value::Bool(true));
     }
@@ -560,6 +588,57 @@ fn normalize_responses_payload(
     ensure_default_instructions(object, &model);
     ensure_prompt_cache_key(object, prompt_cache_key);
     object.insert("input".to_string(), Value::Array(input));
+}
+
+fn normalize_gpt_5_6_reasoning_effort(
+    object: &mut Map<String, Value>,
+    model: &str,
+    inferred_effort: Option<&str>,
+    is_compact: bool,
+) {
+    if !matches!(model, "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna") {
+        return;
+    }
+
+    let explicit_effort = object
+        .get("reasoning")
+        .and_then(Value::as_object)
+        .and_then(|reasoning| reasoning.get("effort"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let Some(effort) = explicit_effort
+        .as_deref()
+        .or(inferred_effort)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let normalized_effort = if is_compact && effort.trim().eq_ignore_ascii_case("max") {
+        "xhigh"
+    } else {
+        effort.as_str()
+    };
+    if explicit_effort.as_deref() == Some(normalized_effort) {
+        return;
+    }
+
+    let reasoning = object
+        .entry("reasoning".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Some(reasoning) = reasoning.as_object_mut() else {
+        return;
+    };
+    reasoning.insert(
+        "effort".to_string(),
+        Value::String(normalized_effort.to_string()),
+    );
+    tracing::debug!(
+        model,
+        requested_effort = effort.as_str(),
+        normalized_effort,
+        is_compact,
+        "normalized GPT-5.6 reasoning effort"
+    );
 }
 
 fn ensure_prompt_cache_key(object: &mut Map<String, Value>, prompt_cache_key: Option<&str>) {
@@ -712,6 +791,14 @@ fn input_contains_additional_image_generation_tool(input: Option<&Value>) -> boo
 }
 
 const CODEX_MODEL_ALIASES: &[(&str, &str)] = &[
+    ("gpt-5.6", "gpt-5.6-sol"),
+    ("gpt-5.6-none", "gpt-5.6-sol"),
+    ("gpt-5.6-minimal", "gpt-5.6-sol"),
+    ("gpt-5.6-low", "gpt-5.6-sol"),
+    ("gpt-5.6-medium", "gpt-5.6-sol"),
+    ("gpt-5.6-high", "gpt-5.6-sol"),
+    ("gpt-5.6-xhigh", "gpt-5.6-sol"),
+    ("gpt-5.6-max", "gpt-5.6-sol"),
     ("gpt-5.6-sol", "gpt-5.6-sol"),
     ("gpt-5.6-sol-none", "gpt-5.6-sol"),
     ("gpt-5.6-sol-low", "gpt-5.6-sol"),

@@ -2,77 +2,70 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn extract_usage_from_gemini_usage_metadata() {
+fn extracts_gemini_usage_and_cache_read_components() {
     let bytes = Bytes::from_static(
-        br#"{"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}"#,
+        br#"{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"totalTokenCount":12,"cachedContentTokenCount":4}}"#,
     );
-    let usage = extract_usage_from_response(&bytes).usage.expect("usage");
-    assert_eq!(usage.input_tokens, Some(1));
+    let snapshot = extract_usage_from_response(&bytes);
+    let usage = snapshot.usage.expect("usage");
+
+    assert_eq!(usage.input_tokens, Some(10));
     assert_eq!(usage.output_tokens, Some(2));
-    assert_eq!(usage.total_tokens, Some(3));
+    assert_eq!(usage.total_tokens, Some(12));
+    assert_eq!(snapshot.billable_usage.uncached_input_tokens, 6);
+    assert_eq!(snapshot.billable_usage.cache_read_tokens, 4);
 }
 
 #[test]
-fn sse_usage_collector_extracts_gemini_usage_metadata() {
+fn extracts_openai_cache_and_image_components() {
+    let bytes = Bytes::from_static(
+        br#"{"usage":{"input_tokens":20,"output_tokens":7,"total_tokens":27,"input_tokens_details":{"cached_tokens":4,"image_tokens":3},"output_tokens_details":{"image_tokens":2}}}"#,
+    );
+    let snapshot = extract_usage_from_response(&bytes);
+
+    assert_eq!(snapshot.billable_usage.uncached_input_tokens, 13);
+    assert_eq!(snapshot.billable_usage.cache_read_tokens, 4);
+    assert_eq!(snapshot.billable_usage.image_input_tokens, 3);
+    assert_eq!(snapshot.billable_usage.output_tokens, 5);
+    assert_eq!(snapshot.billable_usage.image_output_tokens, 2);
+    assert_eq!(
+        snapshot.usage_json.expect("usage json")["input_tokens"],
+        json!(20)
+    );
+}
+
+#[test]
+fn anthropic_cache_breakdown_does_not_double_count_aggregate_write() {
+    let bytes = Bytes::from_static(
+        br#"{"service_tier":"priority","usage":{"input_tokens":10,"output_tokens":2,"cache_read_input_tokens":4,"cache_creation_input_tokens":8,"cache_creation":{"ephemeral_5m_input_tokens":3,"ephemeral_1h_input_tokens":2}}}"#,
+    );
+    let snapshot = extract_usage_from_response(&bytes);
+
+    assert_eq!(snapshot.billable_usage.uncached_input_tokens, 10);
+    assert_eq!(snapshot.billable_usage.cache_read_tokens, 4);
+    assert_eq!(snapshot.billable_usage.cache_write_tokens, 3);
+    assert_eq!(snapshot.billable_usage.cache_write_5m_tokens, 3);
+    assert_eq!(snapshot.billable_usage.cache_write_1h_tokens, 2);
+    assert_eq!(
+        snapshot.usage.as_ref().and_then(|usage| usage.input_tokens),
+        Some(22)
+    );
+    assert_eq!(snapshot.service_tier.as_deref(), Some("priority"));
+}
+
+#[test]
+fn sse_collector_uses_latest_anthropic_usage_event() {
     let mut collector = SseUsageCollector::new();
     collector.push_chunk(
-        b"data: {\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":2,\"totalTokenCount\":3}}\n\n",
+        b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0,\"cache_read_input_tokens\":4,\"cache_creation_input_tokens\":5}}}\n\n",
     );
-    let usage = collector.finish().usage.expect("usage");
-    assert_eq!(usage.input_tokens, Some(1));
-    assert_eq!(usage.output_tokens, Some(2));
-    assert_eq!(usage.total_tokens, Some(3));
-}
-
-#[test]
-fn extract_cached_tokens_from_openai_input_tokens_details() {
-    let bytes = Bytes::from_static(
-        br#"{"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3,"input_tokens_details":{"cached_tokens":4}}}"#,
-    );
-    let snapshot = extract_usage_from_response(&bytes);
-    assert_eq!(snapshot.cached_tokens, Some(4));
-    assert_eq!(
-        snapshot.usage_json.expect("usage_json")["input_tokens"],
-        json!(1)
-    );
-}
-
-#[test]
-fn extract_cached_tokens_from_openai_prompt_tokens_details() {
-    let bytes = Bytes::from_static(
-        br#"{"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,"prompt_tokens_details":{"cached_tokens":4}}}"#,
-    );
-    let snapshot = extract_usage_from_response(&bytes);
-    assert_eq!(snapshot.cached_tokens, Some(4));
-    assert_eq!(
-        snapshot.usage_json.expect("usage_json")["prompt_tokens"],
-        json!(1)
-    );
-}
-
-#[test]
-fn extract_cached_tokens_from_anthropic_cache_fields() {
-    let bytes = Bytes::from_static(
-        br#"{"usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":4,"cache_creation_input_tokens":5}}"#,
-    );
-    let snapshot = extract_usage_from_response(&bytes);
-    assert_eq!(snapshot.cached_tokens, Some(9));
-    assert_eq!(
-        snapshot.usage_json.expect("usage_json")["cache_read_input_tokens"],
-        json!(4)
-    );
-}
-
-#[test]
-fn sse_usage_collector_extracts_anthropic_message_usage_and_cache_tokens() {
-    let mut collector = SseUsageCollector::new();
     collector.push_chunk(
-        b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"cache_read_input_tokens\":4,\"cache_creation_input_tokens\":5}}}\n\n",
+        b"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"cache_read_input_tokens\":4,\"cache_creation_input_tokens\":5}}\n\n",
     );
     let snapshot = collector.finish();
-    assert_eq!(snapshot.cached_tokens, Some(9));
-    let usage = snapshot.usage.expect("usage");
-    assert_eq!(usage.input_tokens, Some(1));
-    assert_eq!(usage.output_tokens, Some(2));
-    assert_eq!(usage.total_tokens, None);
+
+    assert_eq!(snapshot.billable_usage.cache_read_tokens, 4);
+    assert_eq!(snapshot.billable_usage.cache_write_tokens, 5);
+    assert_eq!(snapshot.billable_usage.output_tokens, 2);
+    assert_eq!(snapshot.usage.expect("usage").total_tokens, Some(21));
 }

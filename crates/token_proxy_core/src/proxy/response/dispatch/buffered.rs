@@ -76,11 +76,7 @@ pub(super) async fn build_buffered_response(
             }
             Ok(None) => bytes,
             Err(message) => {
-                let usage = UsageSnapshot {
-                    usage: None,
-                    cached_tokens: None,
-                    usage_json: None,
-                };
+                let usage = UsageSnapshot::default();
                 return respond_transform_error(&mut context, usage, log, message);
             }
         }
@@ -885,11 +881,7 @@ async fn read_upstream_bytes(
                 "upstream synchronous response timeout"
             );
             context.status = StatusCode::GATEWAY_TIMEOUT.as_u16();
-            let empty_usage = UsageSnapshot {
-                usage: None,
-                cached_tokens: None,
-                usage_json: None,
-            };
+            let empty_usage = UsageSnapshot::default();
             let entry = build_log_entry(context, empty_usage, Some(message.clone()));
             log.clone().write_detached(entry);
             let mut response = http::error_response(StatusCode::GATEWAY_TIMEOUT, &message);
@@ -926,11 +918,7 @@ async fn read_upstream_bytes(
                 }
             };
             context.status = status.as_u16();
-            let empty_usage = UsageSnapshot {
-                usage: None,
-                cached_tokens: None,
-                usage_json: None,
-            };
+            let empty_usage = UsageSnapshot::default();
             let entry = build_log_entry(context, empty_usage, Some(message.clone()));
             log.clone().write_detached(entry);
             let mut response = http::error_response(status, &message);
@@ -988,7 +976,7 @@ fn resolve_kiro_usage(
     estimated_input_tokens: Option<u64>,
 ) -> UsageSnapshot {
     let usage = extract_usage_from_response(responses_bytes);
-    if usage.usage.is_none() && usage.cached_tokens.is_none() && usage.usage_json.is_none() {
+    if usage.is_empty() {
         if let Some(fallback) =
             kiro_to_responses::extract_kiro_usage_snapshot(raw_bytes, model, estimated_input_tokens)
         {

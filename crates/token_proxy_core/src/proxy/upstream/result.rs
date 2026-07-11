@@ -395,11 +395,7 @@ pub(super) fn log_upstream_error_if_needed(
         timings: Default::default(),
         start: start_time,
     };
-    let usage = UsageSnapshot {
-        usage: None,
-        cached_tokens: None,
-        usage_json: None,
-    };
+    let usage = UsageSnapshot::default();
     let entry = build_log_entry(&context, usage, Some(response_error));
     log.clone().write_detached(entry);
 }

@@ -19,9 +19,16 @@ export type RequestLogDetail = {
   status: number;
   inputTokens: number | null;
   outputTokens: number | null;
+  uncachedInputTokens?: number | null;
+  imageInputTokens?: number | null;
   imageOutputTokens: number | null;
   totalTokens: number | null;
   cachedTokens: number | null;
+  cacheReadTokens?: number | null;
+  cacheWriteTokens?: number | null;
+  cacheWrite5mTokens?: number | null;
+  cacheWrite1hTokens?: number | null;
+  serviceTier?: string | null;
   costNanoUsd: number | null;
   pricingVersion: string | null;
   pricingModel: string | null;

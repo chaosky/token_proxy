@@ -1726,10 +1726,15 @@ mod tests {
         (format!("http://{addr}/oauth/token"), task)
     }
 
-    async fn spawn_usage_relogin_then_ok_endpoint(
-    ) -> (String, Arc<Mutex<Vec<String>>>, tokio::task::JoinHandle<()>) {
+    async fn spawn_usage_relogin_then_ok_endpoint() -> (
+        String,
+        Arc<Mutex<Vec<(String, String)>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
         async fn handler(
-            axum::extract::State(authorizations): axum::extract::State<Arc<Mutex<Vec<String>>>>,
+            axum::extract::State(request_headers): axum::extract::State<
+                Arc<Mutex<Vec<(String, String)>>>,
+            >,
             headers: axum::http::HeaderMap,
         ) -> axum::response::Response {
             let authorization = headers
@@ -1737,10 +1742,16 @@ mod tests {
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or_default()
                 .to_string();
-            authorizations
+            let user_agent = headers
+                .get(axum::http::header::USER_AGENT)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            // 同时记录鉴权与身份头，验证重试不会退回旧 Codex 客户端版本。
+            request_headers
                 .lock()
-                .expect("usage authorizations lock")
-                .push(authorization.clone());
+                .expect("usage request headers lock")
+                .push((authorization.clone(), user_agent));
 
             let (status, body) = match authorization.as_str() {
                 "Bearer access-old" => (
@@ -1787,10 +1798,10 @@ mod tests {
                 .into_response()
         }
 
-        let authorizations = Arc::new(Mutex::new(Vec::new()));
+        let request_headers = Arc::new(Mutex::new(Vec::new()));
         let app = axum::Router::new()
             .route("/backend-api/wham/usage", axum::routing::get(handler))
-            .with_state(authorizations.clone());
+            .with_state(request_headers.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind usage endpoint");
@@ -1802,7 +1813,7 @@ mod tests {
         });
         (
             format!("http://{addr}/backend-api/wham/usage"),
-            authorizations,
+            request_headers,
             task,
         )
     }
@@ -3401,7 +3412,7 @@ INSERT INTO provider_accounts (
                 )
                 .await
                 .expect("seed codex account");
-            let (usage_url, authorizations, usage_task) =
+            let (usage_url, request_headers, usage_task) =
                 spawn_usage_relogin_then_ok_endpoint().await;
             let (token_url, token_task) = spawn_token_endpoint("access-new").await;
             store.set_test_token_url(&token_url).await;
@@ -3426,10 +3437,16 @@ INSERT INTO provider_accounts (
             assert!(quota.error.is_none());
             assert_eq!(record.access_token, "access-new");
             assert_eq!(
-                *authorizations.lock().expect("usage authorizations lock"),
+                *request_headers.lock().expect("usage request headers lock"),
                 vec![
-                    "Bearer access-old".to_string(),
-                    "Bearer access-new".to_string()
+                    (
+                        "Bearer access-old".to_string(),
+                        crate::codex::USER_AGENT.to_string()
+                    ),
+                    (
+                        "Bearer access-new".to_string(),
+                        crate::codex::USER_AGENT.to_string()
+                    )
                 ]
             );
         });
@@ -3515,7 +3532,7 @@ INSERT INTO provider_accounts (
                 )
                 .await
                 .expect("seed codex account");
-            let (usage_url, authorizations, usage_task) =
+            let (usage_url, request_headers, usage_task) =
                 spawn_usage_relogin_then_ok_endpoint().await;
             let (token_url, token_task) = spawn_relogin_required_token_endpoint().await;
             store.set_test_token_url(&token_url).await;
@@ -3546,8 +3563,11 @@ INSERT INTO provider_accounts (
                 CodexAccountStatus::Invalid
             ));
             assert_eq!(
-                *authorizations.lock().expect("usage authorizations lock"),
-                vec!["Bearer access-old".to_string()]
+                *request_headers.lock().expect("usage request headers lock"),
+                vec![(
+                    "Bearer access-old".to_string(),
+                    crate::codex::USER_AGENT.to_string()
+                )]
             );
         });
     }

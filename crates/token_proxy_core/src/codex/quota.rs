@@ -15,8 +15,6 @@ use super::types::{
 };
 
 const CODEX_USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
-// Match current Codex CLI UA to avoid edge filtering on some proxies.
-const CODEX_USER_AGENT: &str = "codex_cli_rs/0.104.0";
 
 pub async fn fetch_quotas(store: &CodexAccountStore) -> Result<Vec<CodexQuotaSummary>, String> {
     let accounts = store.list_accounts().await?;
@@ -278,7 +276,8 @@ async fn request_usage_once(
         .get(usage_endpoint)
         .header("Authorization", format!("Bearer {access_token}"))
         .header("Accept", "application/json")
-        .header("User-Agent", CODEX_USER_AGENT);
+        // 配额探针与代理流量复用同一身份，避免版本漂移触发边缘过滤。
+        .header("User-Agent", super::USER_AGENT);
     if let Some(account_id) = chatgpt_account_id.filter(|value| !value.trim().is_empty()) {
         request = request.header("ChatGPT-Account-Id", account_id);
     }

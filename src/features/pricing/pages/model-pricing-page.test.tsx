@@ -40,28 +40,40 @@ vi.mock("sonner", () => ({
 
 const snapshot: ModelPricingSettingsSnapshot = {
   settings: {
-    version: "2026-05-16.providerless-v2",
+    version: "catalog.test",
+    source: {
+      url: "https://example.com/pricing.json",
+      commit: "e316ebf52838a89d57fc790981cce7520f819ac8",
+      sha256: "abc",
+      commitTime: "2026-07-10T22:09:25+08:00",
+    },
     models: [
       {
-        modelId: "gpt-5.5",
-        aliases: ["openai/gpt-5.5", "gpt-5.5-latest"],
+        modelId: "gpt-5.6-sol",
+        aliases: ["openai/gpt-5.6-sol"],
         priceMultiplierScaled: 1_250_000_000_000,
-        short: {
+        standard: {
           inputNanoUsdPerToken: 5_000,
-          cachedInputNanoUsdPerToken: 500,
           outputNanoUsdPerToken: 30_000,
+          cacheReadNanoUsdPerToken: 500,
+          cacheWriteNanoUsdPerToken: 6_250,
+          cacheWrite5mNanoUsdPerToken: 6_250,
+          cacheWrite1hNanoUsdPerToken: null,
+          imageInputNanoUsdPerToken: null,
+          imageOutputNanoUsdPerToken: null,
         },
-        long: {
-          inputNanoUsdPerToken: 10_000,
-          cachedInputNanoUsdPerToken: 1_000,
-          outputNanoUsdPerToken: 45_000,
+        serviceTierProfiles: {},
+        longContext: {
+          threshold: 272_000,
+          inputMultiplierScaled: 2_000_000_000_000,
+          outputMultiplierScaled: 1_500_000_000_000,
         },
-        longContextInputTokenThreshold: 272_000,
       },
     ],
   },
   defaultSettings: {
-    version: "2026-05-16.providerless-v2",
+    version: "catalog.test",
+    source: null,
     models: [],
   },
 };
@@ -96,14 +108,16 @@ describe("pricing/ModelPricingPage", () => {
   it("loads current model pricing into an editable table", async () => {
     const { container } = renderPage();
 
-    expect(await screen.findByDisplayValue("gpt-5.5")).toBeInTheDocument();
-    expect(
-      screen.getByDisplayValue("openai/gpt-5.5, gpt-5.5-latest"),
-    ).toBeInTheDocument();
+    expect(await screen.findByDisplayValue("gpt-5.6-sol")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("openai/gpt-5.6-sol")).toBeInTheDocument();
     expect(screen.getByDisplayValue("1.25")).toBeInTheDocument();
     expect(screen.getByDisplayValue("5.000")).toBeInTheDocument();
     expect(screen.getByDisplayValue("0.500")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("6.250")).toBeInTheDocument();
     expect(screen.getByDisplayValue("30.000")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: m.model_pricing_advanced() }),
+    );
     expect(screen.getByDisplayValue("272000")).toBeInTheDocument();
     expect(
       screen.getByText(m.model_pricing_version({ version: snapshot.settings.version })),
@@ -124,16 +138,16 @@ describe("pricing/ModelPricingPage", () => {
   it("saves edited model pricing", async () => {
     renderPage();
 
-    const modelInput = await screen.findByDisplayValue("gpt-5.5");
-    fireEvent.change(modelInput, { target: { value: "gpt-5.5-custom" } });
+    const modelInput = await screen.findByDisplayValue("gpt-5.6-sol");
+    fireEvent.change(modelInput, { target: { value: "gpt-5.6-custom" } });
     fireEvent.click(screen.getByRole("button", { name: m.model_pricing_save() }));
 
     await waitFor(() => {
       expect(saveModelPricingSettingsMock).toHaveBeenCalledWith({
         models: [
           expect.objectContaining({
-            modelId: "gpt-5.5-custom",
-            short: expect.objectContaining({
+            modelId: "gpt-5.6-custom",
+            standard: expect.objectContaining({
               inputNanoUsdPerToken: 5_000,
             }),
             priceMultiplierScaled: 1_250_000_000_000,
@@ -150,7 +164,7 @@ describe("pricing/ModelPricingPage", () => {
   it("confirms before resetting pricing through the backend command", async () => {
     renderPage();
 
-    await screen.findByDisplayValue("gpt-5.5");
+    await screen.findByDisplayValue("gpt-5.6-sol");
     fireEvent.click(screen.getByRole("button", { name: m.model_pricing_reset() }));
 
     expect(resetModelPricingSettingsMock).not.toHaveBeenCalled();
