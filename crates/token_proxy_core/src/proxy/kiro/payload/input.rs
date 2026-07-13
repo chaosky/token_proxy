@@ -17,6 +17,12 @@ pub(super) fn extract_input_messages(object: &Map<String, Value>) -> Result<Vec<
 fn responses_input_to_chat_messages(items: &[Value]) -> Result<Vec<Value>, String> {
     let mut messages = Vec::with_capacity(items.len());
     for item in items {
+        if let Some(item) = item.as_object() {
+            if item.get("type").and_then(Value::as_str) == Some("reasoning") {
+                // Codex may resubmit prior reasoning blocks; Kiro chat does not need them.
+                continue;
+            }
+        }
         messages.push(responses_input_item_to_chat_message(item)?);
     }
     Ok(messages)
@@ -170,6 +176,22 @@ fn responses_message_content_to_chat_content(value: &Value) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_input_messages_skips_reasoning_items() {
+        let request = serde_json::json!({
+            "input": [
+                { "type": "reasoning", "id": "rs_1", "summary": [{ "type": "summary_text", "text": "think" }] },
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] }
+            ]
+        });
+        let messages =
+            extract_input_messages(request.as_object().expect("object")).expect("messages");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], "hi");
+    }
 
     #[test]
     fn extract_input_messages_maps_new_tool_output_types_to_tool_messages() {
