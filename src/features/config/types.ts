@@ -87,6 +87,8 @@ export type UpstreamConfig = {
   proxy_url: string | null;
   priority: number | null;
   enabled: boolean;
+  /** Empty or missing means this upstream accepts every inbound model id. */
+  available_models?: string[];
   model_mappings: Record<string, string>;
   /**
    * 允许从哪些“入站 API 格式”转换后再使用该 provider。
@@ -175,6 +177,8 @@ export type UpstreamForm = {
   proxyUrl: string;
   priority: string;
   enabled: boolean;
+  availableModelsMode: "all" | "selected";
+  availableModels: string[];
   modelMappings: ModelMappingForm[];
   convertFromMap: Record<string, InboundApiFormat[]>;
   overrides: {

@@ -240,6 +240,7 @@ fn upstream_config(id: &str, provider: &str, base_url: &str) -> UpstreamConfig {
         proxy_url: None,
         priority: None,
         enabled: true,
+        available_models: Vec::new(),
         model_mappings: HashMap::new(),
         convert_from_map: HashMap::new(),
         overrides: None,

@@ -247,8 +247,13 @@ async fn try_group_upstreams(
         start,
         cooldown_scope,
     );
-    let eligible_order =
-        filter_eligible_upstreams(order, items, inbound_format, target_upstream_id);
+    let eligible_order = filter_eligible_upstreams(
+        order,
+        items,
+        inbound_format,
+        target_upstream_id,
+        meta.original_model.as_deref(),
+    );
     if eligible_order.is_empty() {
         return GroupAttemptResult::new();
     }
@@ -278,12 +283,14 @@ fn filter_eligible_upstreams(
     items: &[UpstreamRuntime],
     inbound_format: Option<InboundApiFormat>,
     target_upstream_id: Option<&str>,
+    original_model: Option<&str>,
 ) -> Vec<usize> {
     order
         .into_iter()
         .filter(|item_index| {
             inbound_format.is_none_or(|format| items[*item_index].supports_inbound(format))
                 && target_upstream_id.is_none_or(|target| items[*item_index].id.as_str() == target)
+                && items[*item_index].supports_model(original_model)
         })
         .collect()
 }
@@ -692,3 +699,7 @@ fn next_hedge_timer(
     }
     Some(Box::pin(tokio::time::sleep(hedged_request_delay)))
 }
+
+#[cfg(test)]
+#[path = "dispatch.test.rs"]
+mod tests;

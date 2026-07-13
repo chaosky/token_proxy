@@ -116,7 +116,18 @@ fn normalize_single_upstream(
         .map(|value| value.to_string());
     let proxy_url =
         normalize_upstream_proxy_url(upstream.proxy_url.as_deref(), app_proxy_url, &upstream.id)?;
-    let advertised_model_ids = collect_advertised_model_ids(&upstream.model_mappings);
+    let available_models = normalize_available_models(&upstream.available_models);
+    let advertised_model_ids = if available_models.is_empty() {
+        collect_advertised_model_ids(&upstream.model_mappings)
+    } else {
+        available_models.clone()
+    };
+    tracing::debug!(
+        upstream_id = %upstream.id,
+        available_model_count = available_models.len(),
+        unrestricted = available_models.is_empty(),
+        "normalized upstream model availability"
+    );
     let merged_model_mappings =
         merge_hot_model_mappings(hot_model_mappings, &upstream.model_mappings);
     let model_mappings = compile_model_mappings(&upstream.id, &merged_model_mappings)?;
@@ -161,6 +172,7 @@ fn normalize_single_upstream(
                 kiro_preferred_endpoint: upstream.preferred_endpoint.clone(),
                 proxy_url: proxy_url.clone(),
                 priority: upstream.priority.unwrap_or(0),
+                available_models: available_models.clone(),
                 advertised_model_ids: advertised_model_ids.clone(),
                 model_mappings: model_mappings.clone(),
                 header_overrides: header_overrides.clone(),
@@ -174,6 +186,18 @@ fn normalize_single_upstream(
     }
 
     Ok(output)
+}
+
+fn normalize_available_models(models: &[String]) -> Vec<String> {
+    let mut normalized = models
+        .iter()
+        .map(|model| model.trim())
+        .filter(|model| !model.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    normalized
 }
 
 fn collect_advertised_model_ids(model_mappings: &HashMap<String, String>) -> Vec<String> {

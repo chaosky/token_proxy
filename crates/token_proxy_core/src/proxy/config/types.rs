@@ -201,6 +201,9 @@ pub struct UpstreamConfig {
     pub priority: Option<i32>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Inbound model ids accepted by this upstream. An empty list allows every model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_models: Vec<String>,
     #[serde(default)]
     pub model_mappings: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -407,6 +410,7 @@ pub struct UpstreamRuntime {
     pub(crate) kiro_preferred_endpoint: Option<KiroPreferredEndpoint>,
     pub(crate) proxy_url: Option<String>,
     pub(crate) priority: i32,
+    pub(crate) available_models: Vec<String>,
     pub(crate) advertised_model_ids: Vec<String>,
     pub(crate) model_mappings: Option<ModelMappingRules>,
     pub(crate) header_overrides: Option<Vec<HeaderOverride>>,
@@ -439,6 +443,33 @@ impl UpstreamRuntime {
 
     pub(crate) fn supports_inbound(&self, format: InboundApiFormat) -> bool {
         self.allowed_inbound_formats.contains(format)
+    }
+
+    pub(crate) fn supports_model(&self, original_model: Option<&str>) -> bool {
+        if self.available_models.is_empty() {
+            return true;
+        }
+        let Some(original_model) = original_model else {
+            return true;
+        };
+        let model = original_model
+            .split_once('/')
+            .filter(|(prefix, rest)| *prefix == self.id && !rest.trim().is_empty())
+            .map_or(original_model, |(_, rest)| rest);
+        self.available_models
+            .binary_search_by(|candidate| candidate.as_str().cmp(model))
+            .is_ok()
+    }
+
+    pub(crate) fn restrict_model_catalog(&self, models: &mut Vec<String>) {
+        if self.available_models.is_empty() {
+            return;
+        }
+        models.retain(|model| {
+            self.available_models
+                .binary_search_by(|candidate| candidate.as_str().cmp(model.as_str()))
+                .is_ok()
+        });
     }
 }
 

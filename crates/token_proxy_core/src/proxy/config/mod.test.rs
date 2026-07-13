@@ -65,6 +65,7 @@ fn build_runtime_config_routes_openai_responses_via_chat_when_enabled() {
         proxy_url: None,
         priority: Some(0),
         enabled: true,
+        available_models: Vec::new(),
         model_mappings: HashMap::new(),
         convert_from_map: HashMap::new(),
         overrides: None,
@@ -104,6 +105,7 @@ fn build_runtime_config_keeps_openai_responses_provider_when_chat_compat_disable
         proxy_url: None,
         priority: Some(0),
         enabled: true,
+        available_models: Vec::new(),
         model_mappings: HashMap::new(),
         convert_from_map: HashMap::new(),
         overrides: None,
@@ -125,6 +127,48 @@ fn build_runtime_config_keeps_openai_responses_provider_when_chat_compat_disable
 }
 
 #[test]
+fn build_runtime_config_normalizes_available_models() {
+    let mut config = ProxyConfigFile::default();
+    config.upstreams = vec![UpstreamConfig {
+        id: "model-limited".to_string(),
+        providers: vec!["openai".to_string()],
+        base_url: "https://api.openai.com".to_string(),
+        api_keys: vec!["test-key".to_string()],
+        filter_prompt_cache_retention: false,
+        filter_safety_identifier: false,
+        use_chat_completions_for_responses: false,
+        rewrite_developer_role_to_system: false,
+        kiro_account_id: None,
+        codex_account_id: None,
+        preferred_endpoint: None,
+        proxy_url: None,
+        priority: Some(0),
+        enabled: true,
+        available_models: vec![
+            " gpt-5.4-mini ".to_string(),
+            String::new(),
+            "gpt-5.4".to_string(),
+            "gpt-5.4".to_string(),
+        ],
+        model_mappings: HashMap::new(),
+        convert_from_map: HashMap::new(),
+        overrides: None,
+    }];
+
+    let runtime = build_runtime_config(config).expect("runtime config");
+    let item = runtime
+        .provider_upstreams("openai")
+        .and_then(|upstreams| upstreams.groups.first())
+        .and_then(|group| group.items.first())
+        .expect("runtime item");
+
+    assert_eq!(item.available_models, vec!["gpt-5.4", "gpt-5.4-mini"]);
+    assert_eq!(item.advertised_model_ids, item.available_models);
+    assert!(item.supports_model(Some("gpt-5.4")));
+    assert!(!item.supports_model(Some("gpt-4.1")));
+}
+
+#[test]
 fn build_runtime_config_codex_accepts_chat_and_responses_by_default() {
     let mut config = ProxyConfigFile::default();
     config.upstreams = vec![UpstreamConfig {
@@ -142,6 +186,7 @@ fn build_runtime_config_codex_accepts_chat_and_responses_by_default() {
         proxy_url: None,
         priority: Some(0),
         enabled: true,
+        available_models: Vec::new(),
         model_mappings: HashMap::new(),
         convert_from_map: HashMap::new(),
         overrides: None,
@@ -348,6 +393,7 @@ fn build_runtime_config_expands_multiple_api_keys_into_multiple_runtime_upstream
         proxy_url: None,
         priority: Some(0),
         enabled: true,
+        available_models: Vec::new(),
         model_mappings: HashMap::new(),
         convert_from_map: HashMap::new(),
         overrides: None,
@@ -385,6 +431,7 @@ fn build_runtime_config_rejects_api_key_that_cannot_be_precompiled_as_header() {
         proxy_url: None,
         priority: Some(0),
         enabled: true,
+        available_models: Vec::new(),
         model_mappings: HashMap::new(),
         convert_from_map: HashMap::new(),
         overrides: None,
@@ -413,6 +460,7 @@ fn build_runtime_config_rejects_unsupported_provider() {
         proxy_url: None,
         priority: Some(0),
         enabled: true,
+        available_models: Vec::new(),
         model_mappings: HashMap::new(),
         convert_from_map: HashMap::new(),
         overrides: None,
@@ -441,6 +489,7 @@ fn build_runtime_config_rejects_multiple_api_keys_for_account_based_provider() {
         proxy_url: None,
         priority: Some(0),
         enabled: true,
+        available_models: Vec::new(),
         model_mappings: HashMap::new(),
         convert_from_map: HashMap::new(),
         overrides: None,
@@ -470,6 +519,7 @@ fn build_runtime_config_allows_account_based_provider_without_binding_account_id
             proxy_url: None,
             priority: Some(0),
             enabled: true,
+            available_models: Vec::new(),
             model_mappings: HashMap::new(),
             convert_from_map: HashMap::new(),
             overrides: None,
@@ -489,6 +539,7 @@ fn build_runtime_config_allows_account_based_provider_without_binding_account_id
             proxy_url: None,
             priority: Some(0),
             enabled: true,
+            available_models: Vec::new(),
             model_mappings: HashMap::new(),
             convert_from_map: HashMap::new(),
             overrides: None,

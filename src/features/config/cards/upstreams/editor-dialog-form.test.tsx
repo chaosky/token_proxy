@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { UpstreamEditorFields } from "@/features/config/cards/upstreams/editor-dialog-form";
@@ -10,6 +11,74 @@ afterEach(() => {
 });
 
 describe("upstreams/editor-dialog-form", () => {
+  it("shows connection, model access, and collapsed advanced sections", () => {
+    const draft = createEmptyUpstream();
+
+    render(
+      <UpstreamEditorFields
+        draft={draft}
+        providerOptions={["openai"]}
+        appProxyUrl=""
+        showApiKeys={false}
+        onToggleApiKeys={vi.fn()}
+        onChangeDraft={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(m.upstreams_section_connection())).toBeInTheDocument();
+    expect(screen.getByText(m.upstreams_section_models())).toBeInTheDocument();
+    expect(screen.getByText(m.upstreams_section_advanced())).toBeInTheDocument();
+    expect(screen.getByText(m.available_models_all_desc())).toBeInTheDocument();
+  });
+
+  it("switches from all models to selected-model mode", async () => {
+    const user = userEvent.setup();
+    const draft = createEmptyUpstream();
+    const onChangeDraft = vi.fn();
+
+    render(
+      <UpstreamEditorFields
+        draft={draft}
+        providerOptions={["openai"]}
+        appProxyUrl=""
+        showApiKeys={false}
+        onToggleApiKeys={vi.fn()}
+        onChangeDraft={onChangeDraft}
+      />
+    );
+
+    await user.click(screen.getByText(m.available_models_selected()));
+
+    expect(onChangeDraft).toHaveBeenCalledWith({ availableModelsMode: "selected" });
+  });
+
+  it("removes a selected model from the allowlist", async () => {
+    const user = userEvent.setup();
+    const draft = createEmptyUpstream();
+    draft.availableModelsMode = "selected";
+    draft.availableModels = ["gpt-5.4"];
+    const onChangeDraft = vi.fn();
+
+    render(
+      <UpstreamEditorFields
+        draft={draft}
+        providerOptions={["openai"]}
+        appProxyUrl=""
+        showApiKeys={false}
+        onToggleApiKeys={vi.fn()}
+        onChangeDraft={onChangeDraft}
+      />
+    );
+
+    await user.click(
+      screen.getByRole("button", {
+        name: m.available_models_remove({ model: "gpt-5.4" }),
+      }),
+    );
+
+    expect(onChangeDraft).toHaveBeenCalledWith({ availableModels: [] });
+  });
+
   it("renders kiro account selector when provider is kiro", () => {
     const draft = createEmptyUpstream();
     draft.id = "kiro-default";

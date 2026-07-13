@@ -98,6 +98,7 @@ fn config_with_runtime_upstreams(
             kiro_preferred_endpoint: None,
             proxy_url: None,
             priority: *priority,
+            available_models: Vec::new(),
             advertised_model_ids: Vec::new(),
             model_mappings: None,
             header_overrides: None,
@@ -3736,6 +3737,49 @@ fn models_index_aggregates_unique_ids_when_prefix_disabled() {
 
         upstream_a.abort();
         upstream_b.abort();
+    });
+}
+
+#[test]
+fn models_index_applies_upstream_available_models() {
+    run_async(async {
+        let upstream = spawn_model_catalog_upstream(json!({
+            "object": "list",
+            "data": [
+                { "id": "gpt-5.4", "object": "model" },
+                { "id": "gpt-4.1", "object": "model" }
+            ]
+        }))
+        .await;
+        let data_dir = next_test_data_dir("models_index_applies_upstream_available_models");
+        let mut config = config_with_runtime_upstreams(&[(
+            PROVIDER_RESPONSES,
+            0,
+            "alpha",
+            upstream.base_url.as_str(),
+            FORMATS_RESPONSES,
+        )]);
+        let runtime = &mut config
+            .upstreams
+            .get_mut(PROVIDER_RESPONSES)
+            .expect("responses upstreams")
+            .groups[0]
+            .items[0];
+        runtime.available_models = vec!["gpt-5.4".to_string()];
+        runtime.advertised_model_ids = runtime.available_models.clone();
+        let state = build_test_state_handle(config, data_dir).await;
+
+        let (status, body) = send_models_request(state).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let ids = body["data"]
+            .as_array()
+            .expect("models data")
+            .iter()
+            .filter_map(|item| item["id"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["gpt-5.4"]);
+        upstream.abort();
     });
 }
 

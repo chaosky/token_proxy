@@ -21,6 +21,7 @@ fn test_upstream(
         kiro_preferred_endpoint: None,
         proxy_url: None,
         priority: 0,
+        available_models: Vec::new(),
         advertised_model_ids: Vec::new(),
         model_mappings: None,
         header_overrides: None,

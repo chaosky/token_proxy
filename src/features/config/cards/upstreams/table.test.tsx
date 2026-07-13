@@ -26,6 +26,8 @@ function buildUpstream(): UpstreamForm {
     proxyUrl: "",
     priority: "10",
     enabled: true,
+    availableModelsMode: "all",
+    availableModels: [],
     modelMappings: [],
     convertFromMap: {},
     overrides: { header: [] },

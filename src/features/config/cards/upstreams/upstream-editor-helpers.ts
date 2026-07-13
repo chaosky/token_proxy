@@ -156,6 +156,7 @@ export function cloneUpstreamDraft(upstream: UpstreamForm) {
     ...upstream,
     // provider 必选：编辑/复制时也保证至少有一个 provider，避免 UI 出现“看起来有默认值但实际为空”的不同步体验
     providers: providers.length ? providers : ["openai"],
+    availableModels: [...upstream.availableModels],
     modelMappings: upstream.modelMappings.map((mapping) => ({ ...mapping })),
     overrides: {
       header: upstream.overrides.header.map((entry) => ({ ...entry })),

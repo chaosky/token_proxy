@@ -85,6 +85,17 @@ function parseApiKeysInput(value: string) {
   return output;
 }
 
+function normalizeAvailableModels(values: readonly string[]) {
+  const models = new Set<string>();
+  for (const value of values) {
+    const model = value.trim();
+    if (model) {
+      models.add(model);
+    }
+  }
+  return [...models].sort();
+}
+
 const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "host",
   "port",
@@ -148,6 +159,8 @@ export function createEmptyUpstream(): UpstreamForm {
     priority: DEFAULT_UPSTREAM_PRIORITY,
     // 新增上游默认作为草稿，避免用户尚未填完必填项时被“无法保存”阻塞。
     enabled: false,
+    availableModelsMode: "all",
+    availableModels: [],
     modelMappings: [],
     convertFromMap: {},
     overrides: { header: [] },
@@ -221,6 +234,7 @@ export function toForm(config: ProxyConfigFile): ConfigForm {
     upstreams: config.upstreams.map((upstream) => {
       const providers = upstream.providers ?? [];
       const omitNetworkFields = isAccountBackedProviderSet(providers);
+      const availableModels = normalizeAvailableModels(upstream.available_models ?? []);
       return {
         id: upstream.id,
         providers,
@@ -234,6 +248,8 @@ export function toForm(config: ProxyConfigFile): ConfigForm {
         proxyUrl: omitNetworkFields ? "" : upstream.proxy_url ?? "",
         priority: upstream.priority === null ? "" : String(upstream.priority),
         enabled: upstream.enabled,
+        availableModelsMode: availableModels.length ? "selected" : "all",
+        availableModels,
         modelMappings: toModelMappingForm(upstream.model_mappings),
         convertFromMap: upstream.convert_from_map ?? {},
         overrides: normalizeOverrides(upstream.overrides),
@@ -291,6 +307,10 @@ export function toPayload(form: ConfigForm): ProxyConfigFile {
             : null,
         priority: parseOptionalInt(upstream.priority),
         enabled: upstream.enabled,
+        available_models:
+          upstream.availableModelsMode === "selected"
+            ? normalizeAvailableModels(upstream.availableModels)
+            : undefined,
         model_mappings: toModelMappingPayload(upstream.modelMappings),
         convert_from_map: normalizeConvertFromMap(upstream.convertFromMap, providers),
         overrides: toOverridesPayload(upstream.overrides),
@@ -389,6 +409,13 @@ export function validate(form: ConfigForm) {
     // 允许上游为空 / 全部禁用：仅对启用中的上游做强校验；禁用项保留为“草稿”。
     if (!upstream.enabled) {
       continue;
+    }
+
+    if (
+      upstream.availableModelsMode === "selected" &&
+      normalizeAvailableModels(upstream.availableModels).length === 0
+    ) {
+      return { valid: false, message: m.error_upstream_available_models_required({ id }) };
     }
 
     const providers = normalizeProviders(upstream.providers);

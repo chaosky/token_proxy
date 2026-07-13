@@ -1,5 +1,3 @@
-import { HelpCircle } from "lucide-react";
-
 import {
   AlertDialog,
   AlertDialogAction,
@@ -8,10 +6,11 @@ import {
   AlertDialogBody,
   AlertDialogFooter,
   AlertDialogHeader,
+  AlertDialogDescription,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { getUpstreamLabel } from "@/features/config/cards/upstreams/constants";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { UpstreamEditorFields } from "@/features/config/cards/upstreams/editor-dialog-form";
 import type { UpstreamEditorState } from "@/features/config/cards/upstreams/types";
 import type { UpstreamForm } from "@/features/config/types";
@@ -43,30 +42,26 @@ export function UpstreamEditorDialog({
       ? m.upstreams_editor_title_add()
       : m.upstreams_editor_title_edit()
     : m.upstreams_editor_title_default();
-  const description =
-    editor.open && editor.mode === "edit"
-      ? m.upstreams_editor_description_edit({
-          rowLabel: getUpstreamLabel(editor.index),
-        })
-      : m.upstreams_editor_description_create();
-
   return (
     <AlertDialog open={editor.open} onOpenChange={onOpenChange}>
-      <AlertDialogContent className="max-w-xl">
-        <AlertDialogHeader>
-          <AlertDialogTitle className="flex items-center gap-2">
-            {title}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-              </TooltipTrigger>
-              <TooltipContent side="right" className="max-w-xs">
-                {description}
-              </TooltipContent>
-            </Tooltip>
-          </AlertDialogTitle>
+      <AlertDialogContent className="max-w-3xl">
+        <AlertDialogHeader className="flex-row items-start justify-between gap-6 text-left">
+          <div className="space-y-2">
+            <AlertDialogTitle>{title}</AlertDialogTitle>
+            <AlertDialogDescription>{m.upstreams_editor_subtitle()}</AlertDialogDescription>
+          </div>
+          {editor.open ? (
+            <Label className="flex shrink-0 items-center gap-2 font-normal">
+              <span>{editor.draft.enabled ? m.common_enabled() : m.common_disabled()}</span>
+              <Switch
+                checked={editor.draft.enabled}
+                onCheckedChange={(enabled) => onChangeDraft({ enabled })}
+                aria-label={m.field_status()}
+              />
+            </Label>
+          ) : null}
         </AlertDialogHeader>
-        <AlertDialogBody className="space-y-4 pr-1">
+        <AlertDialogBody className="pr-2">
           {editor.open ? (
             <UpstreamEditorFields
               draft={editor.draft}

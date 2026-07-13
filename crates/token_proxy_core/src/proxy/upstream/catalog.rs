@@ -72,11 +72,13 @@ pub(super) async fn aggregate_model_catalog_request(
             .await;
             let mut models = upstream.advertised_model_ids.clone();
             expand_model_ids_with_mappings(&mut models, &state.config.hot_model_mappings);
+            upstream.restrict_model_catalog(&mut models);
             match upstream_model_catalog {
                 Ok(fetched_models) => {
                     successful += 1;
                     merge_model_catalog_ids(&mut models, fetched_models);
                     expand_model_ids_with_mappings(&mut models, &state.config.hot_model_mappings);
+                    upstream.restrict_model_catalog(&mut models);
                     sources.push((upstream.id.clone(), models));
                 }
                 Err(err) => {
@@ -193,6 +195,7 @@ async fn refresh_model_discovery_job(
     let mut models = job.upstream.advertised_model_ids.clone();
     merge_model_catalog_ids(&mut models, builtin_model_ids(job.provider.as_str()));
     expand_model_ids_with_mappings(&mut models, &state.config.hot_model_mappings);
+    job.upstream.restrict_model_catalog(&mut models);
 
     let Some((inbound_path, upstream_path)) = model_catalog_probe_paths(job.provider.as_str())
     else {
@@ -243,6 +246,7 @@ async fn refresh_model_discovery_job(
         Ok(fetched_models) => {
             merge_model_catalog_ids(&mut models, fetched_models);
             expand_model_ids_with_mappings(&mut models, &state.config.hot_model_mappings);
+            job.upstream.restrict_model_catalog(&mut models);
             UpstreamModelProbe::completed(
                 job.upstream.id.as_str(),
                 job.provider.as_str(),

@@ -183,6 +183,51 @@ describe("config/form", () => {
     expect(payload.upstreams[0]?.api_keys).toEqual(["key-a", "key-b"]);
   });
 
+  it("loads and serializes upstream available model restrictions", () => {
+    const source = toPayload(EMPTY_FORM);
+    source.upstreams = [
+      {
+        id: "openai-main",
+        providers: ["openai"],
+        base_url: "https://example.com",
+        proxy_url: null,
+        priority: 0,
+        enabled: true,
+        available_models: [" gpt-5.4-mini ", "gpt-5.4", "gpt-5.4"],
+        model_mappings: {},
+      },
+    ];
+
+    const form = toForm(source);
+    expect(form.upstreams[0]?.availableModelsMode).toBe("selected");
+    expect(form.upstreams[0]?.availableModels).toEqual(["gpt-5.4", "gpt-5.4-mini"]);
+
+    const payload = toPayload(form);
+    expect(payload.upstreams[0]?.available_models).toEqual(["gpt-5.4", "gpt-5.4-mini"]);
+  });
+
+  it("omits available models when all models are allowed", () => {
+    const upstream = createEmptyUpstream();
+    upstream.availableModelsMode = "all";
+    upstream.availableModels = ["gpt-5.4"];
+
+    const payload = toPayload({ ...EMPTY_FORM, upstreams: [upstream] });
+
+    expect(payload.upstreams[0]?.available_models).toBeUndefined();
+  });
+
+  it("requires a model in selected-model mode", () => {
+    const upstream = createEmptyUpstream();
+    upstream.enabled = true;
+    upstream.availableModelsMode = "selected";
+    upstream.availableModels = [];
+
+    const result = validate({ ...EMPTY_FORM, upstreams: [upstream] });
+
+    expect(result.valid).toBe(false);
+    expect(result.message).toContain(upstream.id);
+  });
+
   it("serializes retryable failure cooldown seconds", () => {
     const payload = toPayload({
       ...EMPTY_FORM,
