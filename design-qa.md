@@ -53,4 +53,19 @@ P3：深色主题未在本轮浏览器截图中单独捕获。实现完全使用
 - [x] 768 px 桌面 viewport 无重叠或裁切
 - [x] 无剩余 P0/P1/P2
 
+## 全选补充验收
+
+- Source visual truth：`.planning/upstream-dialog-selected.png`
+- Implementation screenshot：`.planning/upstream-dialog-select-all-768.png`
+- Checked state：`.planning/upstream-dialog-select-all-checked.png`
+- Full-view comparison：`.planning/upstream-dialog-select-all-comparison.png`
+- Viewport：768 x 842，新增上游、仅指定模型、两个候选中选中一个
+- Focused evidence：`.planning/upstream-dialog-select-all.png`，用于检查半选减号、列表行对齐和文案
+
+对照确认新增表头复选框保持原列表宽度、边框、字体和 16 px 控件规格；半选态使用现有 primary token 与 Lucide `Minus`，全选态使用 `Check`。表头占用固定滚动区内一行，不改变搜索、手工添加或底部操作区尺寸。768 px 下无重叠、横向裁切、异常换行或文本溢出。
+
+交互验证：半选时 DOM 为 `aria-checked="mixed"` / `data-state="indeterminate"`；点击后两个候选均为 checked，批量文案切换为“取消全选”。自动化测试另覆盖搜索后只清除当前结果。无新增图片资产，不涉及图片质量变化。
+
+本轮无 P0/P1/P2/P3 发现。
+
 final result: passed

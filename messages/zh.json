@@ -164,6 +164,8 @@
   "available_models_base_url_required": "请先填写 Base URL。",
   "available_models_no_options": "暂无候选模型，可从上游获取或手工添加。",
   "available_models_no_matches": "没有匹配的模型。",
+  "available_models_select_all": "全选",
+  "available_models_clear_all": "取消全选",
   "available_models_remove": "移除模型 {model}",
   "field_base_url": "Base URL",
   "field_base_url_tip": "API 端点地址，留空使用默认值。",

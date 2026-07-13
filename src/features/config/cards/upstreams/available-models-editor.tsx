@@ -51,9 +51,23 @@ export function AvailableModelsEditor({
     ["openai", "openai-response", "anthropic", "gemini"].includes(provider) &&
     !!draft.baseUrl.trim();
   const selectedModels = mergeModels(draft.availableModels);
+  const selectedModelSet = new Set(selectedModels);
   const visibleOptions = mergeModels(options, selectedModels).filter((model) =>
     model.toLowerCase().includes(search.trim().toLowerCase()),
   );
+  const visibleSelectedCount = visibleOptions.filter((model) =>
+    selectedModelSet.has(model),
+  ).length;
+  const allVisibleModelsSelected =
+    visibleOptions.length > 0 && visibleSelectedCount === visibleOptions.length;
+  const visibleModelsSelection = allVisibleModelsSelected
+    ? true
+    : visibleSelectedCount > 0
+      ? "indeterminate"
+      : false;
+  const visibleModelsBulkLabel = allVisibleModelsSelected
+    ? m.available_models_clear_all()
+    : m.available_models_select_all();
 
   const updateSelectedModels = (models: readonly string[]) => {
     onChangeDraft({ availableModels: mergeModels(models) });
@@ -65,6 +79,18 @@ export function AvailableModelsEditor({
       return;
     }
     updateSelectedModels(selectedModels.filter((candidate) => candidate !== model));
+  };
+
+  const toggleVisibleModels = () => {
+    if (!visibleOptions.length) {
+      return;
+    }
+    if (allVisibleModelsSelected) {
+      const visibleModelSet = new Set(visibleOptions);
+      updateSelectedModels(selectedModels.filter((model) => !visibleModelSet.has(model)));
+      return;
+    }
+    updateSelectedModels([...selectedModels, ...visibleOptions]);
   };
 
   const addCustomModel = () => {
@@ -192,21 +218,28 @@ export function AvailableModelsEditor({
           <ScrollArea className="h-40 rounded-md border">
             <div className="divide-y">
               {visibleOptions.length ? (
-                visibleOptions.map((model) => {
-                  const checked = selectedModels.includes(model);
-                  return (
+                <>
+                  <Label className="sticky top-0 z-10 flex min-h-9 cursor-pointer items-center gap-3 bg-muted px-3 py-2 font-normal">
+                    <Checkbox
+                      checked={visibleModelsSelection}
+                      onCheckedChange={toggleVisibleModels}
+                      aria-label={visibleModelsBulkLabel}
+                    />
+                    <span className="text-xs font-medium">{visibleModelsBulkLabel}</span>
+                  </Label>
+                  {visibleOptions.map((model) => (
                     <Label
                       key={model}
                       className="flex min-h-10 cursor-pointer items-center gap-3 px-3 py-2 font-normal hover:bg-muted/50"
                     >
                       <Checkbox
-                        checked={checked}
+                        checked={selectedModelSet.has(model)}
                         onCheckedChange={(value) => toggleModel(model, value === true)}
                       />
                       <span className="min-w-0 flex-1 truncate font-mono text-xs">{model}</span>
                     </Label>
-                  );
-                })
+                  ))}
+                </>
               ) : (
                 <p className="px-3 py-6 text-center text-sm text-muted-foreground">
                   {options.length

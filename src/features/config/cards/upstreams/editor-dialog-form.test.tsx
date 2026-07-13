@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import { invoke } from "@tauri-apps/api/core";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -8,6 +9,7 @@ import { m } from "@/paraglide/messages.js";
 
 afterEach(() => {
   cleanup();
+  vi.mocked(invoke).mockReset();
 });
 
 describe("upstreams/editor-dialog-form", () => {
@@ -77,6 +79,75 @@ describe("upstreams/editor-dialog-form", () => {
     );
 
     expect(onChangeDraft).toHaveBeenCalledWith({ availableModels: [] });
+  });
+
+  it("selects every fetched model from an indeterminate state", async () => {
+    const user = userEvent.setup();
+    const draft = createEmptyUpstream();
+    draft.availableModelsMode = "selected";
+    draft.availableModels = ["gpt-5.4"];
+    const onChangeDraft = vi.fn();
+    vi.mocked(invoke).mockResolvedValue([
+      "gpt-5.5",
+      "claude-sonnet-4.6",
+      "gpt-5.4",
+    ]);
+
+    render(
+      <UpstreamEditorFields
+        draft={draft}
+        providerOptions={["openai"]}
+        appProxyUrl=""
+        showApiKeys={false}
+        onToggleApiKeys={vi.fn()}
+        onChangeDraft={onChangeDraft}
+      />
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: m.available_models_sync() }),
+    );
+    const selectAll = await screen.findByRole("checkbox", {
+      name: m.available_models_select_all(),
+    });
+
+    expect(selectAll).toHaveAttribute("data-state", "indeterminate");
+    await user.click(selectAll);
+
+    expect(onChangeDraft).toHaveBeenCalledWith({
+      availableModels: ["claude-sonnet-4.6", "gpt-5.4", "gpt-5.5"],
+    });
+  });
+
+  it("clears only the models visible in the current search", async () => {
+    const user = userEvent.setup();
+    const draft = createEmptyUpstream();
+    draft.availableModelsMode = "selected";
+    draft.availableModels = ["claude-sonnet-4.6", "gpt-5.4"];
+    const onChangeDraft = vi.fn();
+
+    render(
+      <UpstreamEditorFields
+        draft={draft}
+        providerOptions={["openai"]}
+        appProxyUrl=""
+        showApiKeys={false}
+        onToggleApiKeys={vi.fn()}
+        onChangeDraft={onChangeDraft}
+      />
+    );
+
+    await user.type(
+      screen.getByPlaceholderText(m.available_models_search_placeholder()),
+      "gpt",
+    );
+    await user.click(
+      screen.getByRole("checkbox", { name: m.available_models_clear_all() }),
+    );
+
+    expect(onChangeDraft).toHaveBeenCalledWith({
+      availableModels: ["claude-sonnet-4.6"],
+    });
   });
 
   it("renders kiro account selector when provider is kiro", () => {

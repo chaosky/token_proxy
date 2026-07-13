@@ -164,6 +164,8 @@
   "available_models_base_url_required": "Enter a Base URL first.",
   "available_models_no_options": "No model candidates yet. Fetch from the upstream or add one manually.",
   "available_models_no_matches": "No matching models.",
+  "available_models_select_all": "Select all",
+  "available_models_clear_all": "Clear all",
   "available_models_remove": "Remove model {model}",
   "field_base_url": "Base URL",
   "field_base_url_tip": "API endpoint URL. Leave empty to use provider default.",
