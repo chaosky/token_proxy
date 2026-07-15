@@ -93,6 +93,9 @@ fn build_runtime_config(config: ProxyConfigFile) -> Result<ProxyConfig, String> 
         retryable_failure_cooldown: resolve_retryable_failure_cooldown(
             config.retryable_failure_cooldown_secs,
         )?,
+        same_upstream_retry_count: resolve_same_upstream_retry_count(
+            config.same_upstream_retry_count,
+        )?,
         codex_session_scoped_cooldown_enabled: config.codex_session_scoped_cooldown_enabled,
         stream_first_output_timeout: resolve_timeout_secs(
             "stream_first_output_timeout_secs",
@@ -115,6 +118,18 @@ fn resolve_retryable_failure_cooldown(value: u64) -> Result<Duration, String> {
         return Err("retryable_failure_cooldown_secs is too large.".to_string());
     }
     Ok(duration)
+}
+
+/// 原地重试次数上限，防止误配拖垮尾延迟。
+const MAX_SAME_UPSTREAM_RETRY_COUNT: u64 = 5;
+
+fn resolve_same_upstream_retry_count(value: u64) -> Result<u32, String> {
+    if value > MAX_SAME_UPSTREAM_RETRY_COUNT {
+        return Err(format!(
+            "same_upstream_retry_count must be at most {MAX_SAME_UPSTREAM_RETRY_COUNT}."
+        ));
+    }
+    Ok(value as u32)
 }
 
 fn resolve_timeout_secs(field_name: &str, value: u64) -> Result<Duration, String> {

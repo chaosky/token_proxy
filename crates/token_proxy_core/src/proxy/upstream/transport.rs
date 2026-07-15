@@ -552,7 +552,6 @@ fn handle_upstream_timeout(
         response: None,
         is_timeout: true,
         should_cooldown: true,
-        retry_same_upstream_once: request_recovery == TransportRecovery::SameUpstreamOnce,
     }
 }
 
@@ -623,7 +622,6 @@ fn map_upstream_error(
         response: None,
         is_timeout: failure.is_timeout,
         should_cooldown: true,
-        retry_same_upstream_once: failure.recovery == TransportRecovery::SameUpstreamOnce,
     }
 }
 
@@ -644,6 +642,7 @@ mod tests {
             log_level: LogLevel::Silent,
             max_request_body_bytes: 1024,
             retryable_failure_cooldown: Duration::from_secs(15),
+            same_upstream_retry_count: 1,
             codex_session_scoped_cooldown_enabled: false,
             stream_first_output_timeout: Duration::from_secs(60),
             sync_response_timeout: Duration::from_secs(120),

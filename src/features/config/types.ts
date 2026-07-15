@@ -113,6 +113,7 @@ export type ProxyConfigFileBase = {
   kiro_preferred_endpoint?: KiroPreferredEndpoint | null;
   log_level?: LogLevel;
   retryable_failure_cooldown_secs?: number;
+  same_upstream_retry_count?: number;
   codex_session_scoped_cooldown_enabled?: boolean;
   stream_first_output_timeout_secs?: number;
   sync_response_timeout_secs?: number;
@@ -209,6 +210,7 @@ export type ConfigForm = {
   kiroPreferredEndpoint: "" | KiroPreferredEndpoint;
   logLevel: LogLevel;
   retryableFailureCooldownSecs: string;
+  sameUpstreamRetryCount: string;
   codexSessionScopedCooldownEnabled: boolean;
   streamFirstOutputTimeoutSecs: string;
   syncResponseTimeoutSecs: string;

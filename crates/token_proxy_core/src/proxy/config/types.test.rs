@@ -293,6 +293,13 @@ fn proxy_config_file_defaults_retryable_failure_cooldown_to_15_seconds() {
 }
 
 #[test]
+fn proxy_config_file_defaults_same_upstream_retry_count_to_one() {
+    let config = ProxyConfigFile::default();
+
+    assert_eq!(config.same_upstream_retry_count, 1);
+}
+
+#[test]
 fn proxy_config_file_defaults_codex_session_scoped_cooldown_disabled() {
     let config = ProxyConfigFile::default();
 

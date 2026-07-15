@@ -122,7 +122,6 @@ fn apply_attempt_outcome(result: &mut GroupAttemptResult, outcome: AttemptOutcom
             response,
             is_timeout,
             should_cooldown: _,
-            retry_same_upstream_once: _,
         } => {
             if is_timeout {
                 result.last_timeout_error = Some(message.clone());
@@ -350,7 +349,7 @@ async fn dispatch_group_upstreams(
     let mut result = GroupAttemptResult::new();
     let mut in_flight: FuturesUnordered<GroupAttemptFuture<'_>> = FuturesUnordered::new();
     let mut next_to_launch = 0usize;
-    let mut retried_same_upstreams = Vec::new();
+    let max_same_upstream_retries = state.config.same_upstream_retry_count;
 
     launch_group_attempts(
         &mut in_flight,
@@ -444,55 +443,28 @@ async fn dispatch_group_upstreams(
 
         if let Some((item_index, outcome)) = completed {
             let upstream = &items[item_index];
-            if should_retry_same_upstream_once(&outcome)
-                && !retried_same_upstreams.contains(&item_index)
-            {
-                retried_same_upstreams.push(item_index);
-                if apply_group_attempt_outcome(
-                    state,
-                    provider,
-                    upstream,
-                    &mut result,
-                    outcome,
-                    cooldown_scope,
-                ) {
-                    return result;
-                }
-                let retry_outcome = retry_same_upstream_once(
-                    state,
-                    &method,
-                    provider,
-                    upstream,
-                    inbound_path,
-                    upstream_path_with_query,
-                    headers,
-                    body,
-                    meta,
-                    request_auth,
-                    client_gemini_api_key,
-                    response_transform,
-                    &request_detail,
-                    cooldown_scope,
-                )
-                .await;
-                if apply_group_attempt_outcome(
-                    state,
-                    provider,
-                    upstream,
-                    &mut result,
-                    retry_outcome,
-                    cooldown_scope,
-                ) {
-                    return result;
-                }
-            } else if apply_group_attempt_outcome(
+            // 任意 Retryable：先在同一上游原地重试最多 N 次，再进入跨上游 failover。
+            if apply_same_upstream_retries(
                 state,
+                &method,
                 provider,
                 upstream,
+                inbound_path,
+                upstream_path_with_query,
+                headers,
+                body,
+                meta,
+                request_auth,
+                client_gemini_api_key,
+                response_transform,
+                &request_detail,
+                cooldown_scope,
                 &mut result,
                 outcome,
-                cooldown_scope,
-            ) {
+                max_same_upstream_retries,
+            )
+            .await
+            {
                 return result;
             }
             let immediate_slots = dispatch_plan
@@ -533,17 +505,9 @@ async fn dispatch_group_upstreams(
     result
 }
 
-fn should_retry_same_upstream_once(outcome: &AttemptOutcome) -> bool {
-    matches!(
-        outcome,
-        AttemptOutcome::Retryable {
-            retry_same_upstream_once: true,
-            ..
-        }
-    )
-}
-
-async fn retry_same_upstream_once(
+/// 对当前完成结果记账；若为 Retryable 且未达上限，则同步原地再试。
+/// 返回 true 表示已得到终态响应（Success/Fatal），调用方应立即返回。
+async fn apply_same_upstream_retries(
     state: &ProxyState,
     method: &Method,
     provider: &str,
@@ -558,42 +522,67 @@ async fn retry_same_upstream_once(
     response_transform: FormatTransform,
     request_detail: &Option<RequestDetailSnapshot>,
     cooldown_scope: &CooldownScope,
-) -> AttemptOutcome {
-    tracing::info!(
-        provider,
-        upstream = %upstream.id,
-        "retrying same upstream once before upstream failover"
-    );
-    let outcome = attempt::attempt_upstream(
-        state,
-        method.clone(),
-        provider,
-        upstream,
-        inbound_path,
-        upstream_path_with_query,
-        headers,
-        body,
-        meta,
-        request_auth,
-        client_gemini_api_key,
-        response_transform,
-        request_detail.clone(),
-        cooldown_scope,
-    )
-    .await;
-    let retry_result = match &outcome {
-        AttemptOutcome::Success(_) => "success",
-        AttemptOutcome::Retryable { .. } => "retryable_failure",
-        AttemptOutcome::Fatal(_) => "fatal_failure",
-        AttemptOutcome::SkippedAuth => "skipped_auth",
-    };
-    tracing::info!(
-        provider,
-        upstream = %upstream.id,
-        retry_result,
-        "same upstream retry completed"
-    );
-    outcome
+    result: &mut GroupAttemptResult,
+    initial: AttemptOutcome,
+    max_retries: u32,
+) -> bool {
+    let mut current = initial;
+    let mut used = 0u32;
+    loop {
+        let is_retryable = matches!(current, AttemptOutcome::Retryable { .. });
+        if apply_group_attempt_outcome(
+            state,
+            provider,
+            upstream,
+            result,
+            current,
+            cooldown_scope,
+        ) {
+            return true;
+        }
+        if !is_retryable || used >= max_retries {
+            return false;
+        }
+        used += 1;
+        tracing::info!(
+            provider,
+            upstream = %upstream.id,
+            attempt = used,
+            max = max_retries,
+            "retrying same upstream before upstream failover"
+        );
+        current = attempt::attempt_upstream(
+            state,
+            method.clone(),
+            provider,
+            upstream,
+            inbound_path,
+            upstream_path_with_query,
+            headers,
+            body,
+            meta,
+            request_auth,
+            client_gemini_api_key,
+            response_transform,
+            request_detail.clone(),
+            cooldown_scope,
+        )
+        .await;
+        let retry_result = match &current {
+            AttemptOutcome::Success(_) => "success",
+            AttemptOutcome::Retryable { .. } => "retryable_failure",
+            AttemptOutcome::Fatal(_) => "fatal_failure",
+            AttemptOutcome::SkippedAuth => "skipped_auth",
+        };
+        tracing::info!(
+            provider,
+            upstream = %upstream.id,
+            attempt = used,
+            max = max_retries,
+            retry_result,
+            "same upstream retry completed"
+        );
+    }
 }
 
 fn launch_group_attempts<'a>(

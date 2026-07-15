@@ -181,6 +181,23 @@ function ProxyCoreFields({
           {m.proxy_core_retryable_failure_cooldown_secs_help()}
         </p>
       </div>
+      <div className="grid gap-2">
+        <Label htmlFor="same-upstream-retry-count">
+          {m.proxy_core_same_upstream_retry_count_label()}
+        </Label>
+        <Input
+          id="same-upstream-retry-count"
+          value={form.sameUpstreamRetryCount}
+          onChange={(event) =>
+            onChange({ sameUpstreamRetryCount: event.target.value })
+          }
+          placeholder="1"
+          inputMode="numeric"
+        />
+        <p className="text-xs text-muted-foreground">
+          {m.proxy_core_same_upstream_retry_count_help()}
+        </p>
+      </div>
       <div className="flex items-start justify-between gap-4">
         <div className="space-y-1">
           <Label htmlFor="codex-session-scoped-cooldown">

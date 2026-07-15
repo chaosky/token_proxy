@@ -48,6 +48,29 @@ fn build_runtime_config_rejects_retryable_failure_cooldown_that_overflows_instan
 }
 
 #[test]
+fn build_runtime_config_maps_same_upstream_retry_count() {
+    let mut config = ProxyConfigFile::default();
+    config.same_upstream_retry_count = 3;
+
+    let runtime = build_runtime_config(config).expect("runtime config");
+
+    assert_eq!(runtime.same_upstream_retry_count, 3);
+}
+
+#[test]
+fn build_runtime_config_rejects_same_upstream_retry_count_above_max() {
+    let mut config = ProxyConfigFile::default();
+    config.same_upstream_retry_count = 6;
+
+    let result = build_runtime_config(config);
+
+    match result {
+        Ok(_) => panic!("same_upstream_retry_count above max should be rejected"),
+        Err(message) => assert!(message.contains("same_upstream_retry_count")),
+    }
+}
+
+#[test]
 fn build_runtime_config_routes_openai_responses_via_chat_when_enabled() {
     let mut config = ProxyConfigFile::default();
     config.upstreams = vec![UpstreamConfig {

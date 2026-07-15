@@ -106,6 +106,7 @@ const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "kiro_preferred_endpoint",
   "log_level",
   "retryable_failure_cooldown_secs",
+  "same_upstream_retry_count",
   "codex_session_scoped_cooldown_enabled",
   "stream_first_output_timeout_secs",
   "sync_response_timeout_secs",
@@ -130,6 +131,7 @@ export const EMPTY_FORM: ConfigForm = {
   kiroPreferredEndpoint: "ide",
   logLevel: "silent",
   retryableFailureCooldownSecs: "15",
+  sameUpstreamRetryCount: "1",
   codexSessionScopedCooldownEnabled: false,
   streamFirstOutputTimeoutSecs: String(DEFAULT_STREAM_FIRST_OUTPUT_TIMEOUT_SECS),
   syncResponseTimeoutSecs: String(DEFAULT_SYNC_RESPONSE_TIMEOUT_SECS),
@@ -220,6 +222,7 @@ export function toForm(config: ProxyConfigFile): ConfigForm {
     kiroPreferredEndpoint: config.kiro_preferred_endpoint ?? "ide",
     logLevel: config.log_level ?? "silent",
     retryableFailureCooldownSecs: String(config.retryable_failure_cooldown_secs ?? 15),
+    sameUpstreamRetryCount: String(config.same_upstream_retry_count ?? 1),
     codexSessionScopedCooldownEnabled:
       config.codex_session_scoped_cooldown_enabled ?? false,
     streamFirstOutputTimeoutSecs: String(
@@ -272,6 +275,7 @@ export function toPayload(form: ConfigForm): ProxyConfigFile {
     retryable_failure_cooldown_secs: parseRetryableFailureCooldownSecs(
       form.retryableFailureCooldownSecs,
     ),
+    same_upstream_retry_count: parseSameUpstreamRetryCount(form.sameUpstreamRetryCount),
     codex_session_scoped_cooldown_enabled: form.codexSessionScopedCooldownEnabled,
     stream_first_output_timeout_secs: parseTimeoutSecs(
       form.streamFirstOutputTimeoutSecs,
@@ -369,6 +373,12 @@ export function validate(form: ConfigForm) {
     return {
       valid: false,
       message: m.error_retryable_failure_cooldown_secs_integer(),
+    };
+  }
+  if (!isValidSameUpstreamRetryCount(form.sameUpstreamRetryCount)) {
+    return {
+      valid: false,
+      message: m.error_same_upstream_retry_count_range(),
     };
   }
   if (!isValidTimeoutSecs(form.streamFirstOutputTimeoutSecs)) {
@@ -766,6 +776,37 @@ function parseRetryableFailureCooldownSecs(value: string) {
   }
   const number = Number.parseInt(trimmed, 10);
   return Number.isFinite(number) ? number : 15;
+}
+
+const DEFAULT_SAME_UPSTREAM_RETRY_COUNT = 1;
+const MAX_SAME_UPSTREAM_RETRY_COUNT = 5;
+
+function isValidSameUpstreamRetryCount(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed || !NON_NEGATIVE_INTEGER_PATTERN.test(trimmed)) {
+    return false;
+  }
+  const number = Number.parseInt(trimmed, 10);
+  return (
+    Number.isFinite(number) &&
+    number >= 0 &&
+    number <= MAX_SAME_UPSTREAM_RETRY_COUNT
+  );
+}
+
+function parseSameUpstreamRetryCount(value: string) {
+  const trimmed = value.trim();
+  if (!NON_NEGATIVE_INTEGER_PATTERN.test(trimmed)) {
+    return DEFAULT_SAME_UPSTREAM_RETRY_COUNT;
+  }
+  const number = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(number)) {
+    return DEFAULT_SAME_UPSTREAM_RETRY_COUNT;
+  }
+  if (number < 0 || number > MAX_SAME_UPSTREAM_RETRY_COUNT) {
+    return DEFAULT_SAME_UPSTREAM_RETRY_COUNT;
+  }
+  return number;
 }
 
 function isValidTimeoutSecs(value: string) {

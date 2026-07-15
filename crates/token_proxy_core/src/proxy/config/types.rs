@@ -35,12 +35,20 @@ fn default_retryable_failure_cooldown_secs() -> u64 {
     15
 }
 
+fn default_same_upstream_retry_count() -> u64 {
+    1
+}
+
 fn default_model_list_prefix() -> bool {
     false
 }
 
 fn is_default_retryable_failure_cooldown_secs(value: &u64) -> bool {
     *value == default_retryable_failure_cooldown_secs()
+}
+
+fn is_default_same_upstream_retry_count(value: &u64) -> bool {
+    *value == default_same_upstream_retry_count()
 }
 
 fn default_stream_first_output_timeout_secs() -> u64 {
@@ -245,6 +253,12 @@ pub struct ProxyConfigFile {
         skip_serializing_if = "is_default_retryable_failure_cooldown_secs"
     )]
     pub retryable_failure_cooldown_secs: u64,
+    /// 可重试失败时，同一上游原地额外重试次数（不含首次发送）；0 关闭，默认 1。
+    #[serde(
+        default = "default_same_upstream_retry_count",
+        skip_serializing_if = "is_default_same_upstream_retry_count"
+    )]
+    pub same_upstream_retry_count: u64,
     #[serde(default, skip_serializing_if = "is_false")]
     pub codex_session_scoped_cooldown_enabled: bool,
     #[serde(
@@ -280,6 +294,7 @@ impl Default for ProxyConfigFile {
             log_level: LogLevel::default(),
             max_request_body_bytes: None,
             retryable_failure_cooldown_secs: default_retryable_failure_cooldown_secs(),
+            same_upstream_retry_count: default_same_upstream_retry_count(),
             codex_session_scoped_cooldown_enabled: false,
             stream_first_output_timeout_secs: default_stream_first_output_timeout_secs(),
             sync_response_timeout_secs: default_sync_response_timeout_secs(),
@@ -329,6 +344,8 @@ pub struct ProxyConfig {
     pub log_level: LogLevel,
     pub max_request_body_bytes: usize,
     pub retryable_failure_cooldown: std::time::Duration,
+    /// 同一上游原地额外重试次数（不含首次）；运行时已校验上限。
+    pub same_upstream_retry_count: u32,
     pub codex_session_scoped_cooldown_enabled: bool,
     pub stream_first_output_timeout: std::time::Duration,
     pub sync_response_timeout: std::time::Duration,

@@ -137,6 +137,7 @@ fn config_with_runtime_upstreams(
         log_level: LogLevel::Silent,
         max_request_body_bytes: 20 * 1024 * 1024,
         retryable_failure_cooldown: std::time::Duration::from_secs(15),
+        same_upstream_retry_count: 1,
         stream_first_output_timeout: std::time::Duration::from_secs(60),
         sync_response_timeout: std::time::Duration::from_secs(120),
         upstream_strategy: UpstreamStrategyRuntime {
@@ -2104,7 +2105,11 @@ async fn assert_responses_retry_fallback_status(status: StatusCode) {
         response_json["output"][0]["content"][0]["text"].as_str(),
         Some("from codex fallback")
     );
-    assert_eq!(primary_requests.len(), 1);
+    assert_eq!(
+        primary_requests.len(),
+        2,
+        "retryable primary is same-upstream retried once before codex fallback"
+    );
     assert_eq!(primary_requests[0].path, RESPONSES_PATH);
     assert_eq!(fallback_requests.len(), 1);
     assert_eq!(fallback_requests[0].path, CODEX_RESPONSES_PATH);
@@ -2193,7 +2198,11 @@ data: [DONE]\n\n",
     );
     assert!(response_text.contains("from responses fallback"));
     assert!(!response_text.contains("primary codex stream failed"));
-    assert_eq!(primary_requests.len(), 1);
+    assert_eq!(
+        primary_requests.len(),
+        2,
+        "retryable codex prelude error is same-upstream retried once before fallback"
+    );
     assert_eq!(primary_requests[0].path, CODEX_RESPONSES_PATH);
     assert_eq!(fallback_requests.len(), 1);
     assert_eq!(fallback_requests[0].path, RESPONSES_PATH);
@@ -2585,8 +2594,8 @@ async fn assert_codex_transport_disconnect_does_not_restart_account_chain(pinned
     );
     assert_eq!(
         codex_connections,
-        if pinned { 1 } else { 2 },
-        "Codex transport recovery must not restart the account chain"
+        2,
+        "transport disconnect allows one same-upstream retry without expanding the account chain"
     );
     assert_eq!(fallback_requests.len(), 1);
 }
@@ -2686,7 +2695,11 @@ async fn assert_codex_header_timeout_does_not_restart_account_chain() {
         response["output"][0]["content"][0]["text"].as_str(),
         Some("responses fallback after codex timeout")
     );
-    assert_eq!(codex_requests.len(), 2, "each Codex account runs once");
+    assert_eq!(
+        codex_requests.len(),
+        4,
+        "each Codex account runs once per same-upstream attempt (2 accounts × 2 attempts)"
+    );
     let mut account_ids = codex_requests
         .iter()
         .map(|request| {
@@ -2697,6 +2710,7 @@ async fn assert_codex_header_timeout_does_not_restart_account_chain() {
         })
         .collect::<Vec<_>>();
     account_ids.sort();
+    account_ids.dedup();
     assert_eq!(
         account_ids,
         vec!["chatgpt-a".to_string(), "chatgpt-b".to_string()]
@@ -2779,8 +2793,8 @@ data: [DONE]\n\n",
     assert!(response_text.contains("from responses fallback"));
     assert_eq!(
         primary_requests.len(),
-        1,
-        "pinned Codex timeout is not replayed"
+        2,
+        "pinned Codex timeout still gets one same-upstream retry before fallback"
     );
     assert_eq!(fallback_requests.len(), 1);
     assert_eq!(primary_requests[0].path, CODEX_RESPONSES_PATH);
@@ -2947,7 +2961,11 @@ data: [DONE]\n\n",
     );
     assert!(response_text.contains("from responses fallback"));
     assert!(!response_text.contains("primary codex stream failed after created"));
-    assert_eq!(primary_requests.len(), 1);
+    assert_eq!(
+        primary_requests.len(),
+        2,
+        "retryable codex prelude error is same-upstream retried once before fallback"
+    );
     assert_eq!(primary_requests[0].path, CODEX_RESPONSES_PATH);
     assert_eq!(fallback_requests.len(), 1);
     assert_eq!(fallback_requests[0].path, RESPONSES_PATH);
@@ -3032,6 +3050,158 @@ async fn assert_responses_request_retries_same_upstream_once_after_capacity_erro
             "capacity retry must keep the caller-requested model"
         );
     }
+}
+
+async fn assert_responses_request_skips_same_upstream_retry_when_count_is_zero() {
+    let primary = spawn_mock_raw_upstream(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Bytes::from(r#"{"error":{"message":"primary boom"}}"#),
+        "application/json",
+    )
+    .await;
+    let fallback = spawn_mock_raw_upstream(
+        StatusCode::OK,
+        Bytes::from(
+            json!({
+                "id": "resp_zero_retry_fallback",
+                "object": "response",
+                "created_at": 123,
+                "model": "gpt-5",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "id": "msg_1",
+                        "status": "completed",
+                        "role": "assistant",
+                        "content": [
+                            { "type": "output_text", "text": "fallback after zero same-upstream" }
+                        ]
+                    }
+                ],
+                "usage": { "input_tokens": 1, "output_tokens": 1, "total_tokens": 2 }
+            })
+            .to_string(),
+        ),
+        "application/json",
+    )
+    .await;
+    let mut config = config_with_runtime_upstreams(&[
+        (
+            PROVIDER_RESPONSES,
+            10,
+            "responses-zero-retry-primary",
+            primary.base_url.as_str(),
+            FORMATS_RESPONSES,
+        ),
+        (
+            PROVIDER_RESPONSES,
+            5,
+            "responses-zero-retry-fallback",
+            fallback.base_url.as_str(),
+            FORMATS_RESPONSES,
+        ),
+    ]);
+    config.same_upstream_retry_count = 0;
+    config.upstream_strategy = UpstreamStrategyRuntime {
+        order: UpstreamOrderStrategy::FillFirst,
+        dispatch: UpstreamDispatchRuntime::Serial,
+    };
+    let data_dir = next_test_data_dir("responses_zero_same_upstream_retry");
+    let state = build_test_state_handle(config, data_dir.clone()).await;
+
+    let (status, json) = send_responses_request(state).await;
+    let primary_requests = primary.requests();
+    let fallback_requests = fallback.requests();
+
+    primary.abort();
+    fallback.abort();
+    let _ = std::fs::remove_dir_all(&data_dir);
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json["output"][0]["content"][0]["text"].as_str(),
+        Some("fallback after zero same-upstream")
+    );
+    assert_eq!(
+        primary_requests.len(),
+        1,
+        "count=0 must not re-hit the same upstream"
+    );
+    assert_eq!(fallback_requests.len(), 1);
+}
+
+async fn assert_responses_request_retries_same_upstream_twice_when_count_is_two() {
+    let primary = spawn_mock_raw_sequence_upstream(vec![
+        (
+            StatusCode::BAD_GATEWAY,
+            Bytes::from(r#"{"error":{"message":"transient 1"}}"#),
+            "application/json",
+        ),
+        (
+            StatusCode::BAD_GATEWAY,
+            Bytes::from(r#"{"error":{"message":"transient 2"}}"#),
+            "application/json",
+        ),
+        (
+            StatusCode::OK,
+            Bytes::from(
+                json!({
+                    "id": "resp_after_two_retries",
+                    "object": "response",
+                    "created_at": 123,
+                    "model": "gpt-5",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "id": "msg_1",
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [
+                                { "type": "output_text", "text": "recovered after two same-upstream retries" }
+                            ]
+                        }
+                    ],
+                    "usage": { "input_tokens": 1, "output_tokens": 2, "total_tokens": 3 }
+                })
+                .to_string(),
+            ),
+            "application/json",
+        ),
+    ])
+    .await;
+    let mut config = config_with_runtime_upstreams(&[(
+        PROVIDER_RESPONSES,
+        10,
+        "responses-two-retry-primary",
+        primary.base_url.as_str(),
+        FORMATS_RESPONSES,
+    )]);
+    config.same_upstream_retry_count = 2;
+    config.upstream_strategy = UpstreamStrategyRuntime {
+        order: UpstreamOrderStrategy::FillFirst,
+        dispatch: UpstreamDispatchRuntime::Serial,
+    };
+    let data_dir = next_test_data_dir("responses_two_same_upstream_retries");
+    let state = build_test_state_handle(config, data_dir.clone()).await;
+
+    let (status, json) = send_responses_request(state).await;
+    let primary_requests = primary.requests();
+
+    primary.abort();
+    let _ = std::fs::remove_dir_all(&data_dir);
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json["output"][0]["content"][0]["text"].as_str(),
+        Some("recovered after two same-upstream retries")
+    );
+    assert_eq!(
+        primary_requests.len(),
+        3,
+        "count=2 allows first attempt plus two same-upstream retries"
+    );
 }
 
 async fn assert_responses_stream_retries_same_upstream_once_after_split_prelude_capacity_error() {
@@ -4715,7 +4885,11 @@ data: [DONE]\n\n",
             json["choices"][0]["message"]["content"].as_str(),
             Some("from responses fallback")
         );
-        assert_eq!(primary_requests.len(), 1);
+        assert_eq!(
+            primary_requests.len(),
+            2,
+            "empty choices retryable response is same-upstream retried once"
+        );
         assert_eq!(primary_requests[0].path, "/v1/chat/completions");
         assert_eq!(fallback_requests.len(), 1);
         assert_eq!(fallback_requests[0].path, RESPONSES_PATH);
@@ -5789,6 +5963,20 @@ fn responses_request_retries_same_upstream_once_after_capacity_error() {
 }
 
 #[test]
+fn responses_request_skips_same_upstream_retry_when_count_is_zero() {
+    run_async(async {
+        assert_responses_request_skips_same_upstream_retry_when_count_is_zero().await;
+    });
+}
+
+#[test]
+fn responses_request_retries_same_upstream_twice_when_count_is_two() {
+    run_async(async {
+        assert_responses_request_retries_same_upstream_twice_when_count_is_two().await;
+    });
+}
+
+#[test]
 fn responses_stream_request_falls_back_from_codex_when_headers_timeout_before_output() {
     run_async(async {
         assert_responses_stream_fallbacks_after_pre_header_timeout().await;
@@ -6517,7 +6705,11 @@ data: [DONE]\n\n",
             response_json["data"][0]["b64_json"].as_str(),
             Some("cmV0cnk=")
         );
-        assert_eq!(openai_requests.len(), 1);
+        assert_eq!(
+            openai_requests.len(),
+            2,
+            "native image failure is same-upstream retried once before codex bridge"
+        );
         assert_eq!(openai_requests[0].path, "/v1/images/generations");
         assert_eq!(codex_requests.len(), 1);
         assert_eq!(codex_requests[0].path, CODEX_RESPONSES_PATH);
@@ -6604,7 +6796,11 @@ data: [DONE]\n\n",
             response_json["error"]["message"].as_str(),
             Some("native image upstream unavailable")
         );
-        assert_eq!(openai_requests.len(), 1);
+        assert_eq!(
+            openai_requests.len(),
+            2,
+            "native image failure is same-upstream retried once even when codex is ineligible"
+        );
         assert!(codex_requests.is_empty());
     });
 }
@@ -6983,7 +7179,11 @@ data: [DONE]\n\n",
             response_json["data"][0]["b64_json"].as_str(),
             Some("ZmFpbG92ZXI=")
         );
-        assert_eq!(primary_requests.len(), 1);
+        assert_eq!(
+            primary_requests.len(),
+            2,
+            "codex bridge retryable image failure is same-upstream retried once"
+        );
         assert_eq!(fallback_requests.len(), 1);
         assert_eq!(primary_requests[0].path, CODEX_RESPONSES_PATH);
         assert_eq!(fallback_requests[0].path, CODEX_RESPONSES_PATH);
@@ -7068,7 +7268,11 @@ data: [DONE]\n\n",
             response_json["data"][0]["b64_json"].as_str(),
             Some("ZW1wdHktZmFpbG92ZXI=")
         );
-        assert_eq!(primary_requests.len(), 1);
+        assert_eq!(
+            primary_requests.len(),
+            2,
+            "codex bridge retryable image failure is same-upstream retried once"
+        );
         assert_eq!(fallback_requests.len(), 1);
     });
 }
@@ -7631,7 +7835,11 @@ fn anthropic_messages_request_falls_back_from_responses_to_codex() {
             json["content"][0]["text"].as_str(),
             Some("fallback from codex for claude")
         );
-        assert_eq!(responses_requests.len(), 1);
+        assert_eq!(
+            responses_requests.len(),
+            2,
+            "retryable responses primary is same-upstream retried once before codex"
+        );
         assert_eq!(responses_requests[0].path, RESPONSES_PATH);
         assert_eq!(codex_requests.len(), 1);
         assert_eq!(codex_requests[0].path, CODEX_RESPONSES_PATH);
@@ -7718,8 +7926,8 @@ fn responses_request_skips_recently_failed_same_provider_upstream() {
         );
         assert_eq!(
             primary_requests.len(),
-            1,
-            "primary upstream should be cooled down after the first retryable failure"
+            2,
+            "first request same-upstream retries once; second request skips cooled primary"
         );
         assert_eq!(secondary_requests.len(), 2);
     });
@@ -7806,8 +8014,8 @@ fn responses_request_cooldowns_same_provider_upstream_after_401() {
         );
         assert_eq!(
             primary_requests.len(),
-            1,
-            "401 should cool down the upstream to avoid repeatedly hitting the same invalid account"
+            2,
+            "first request same-upstream retries once; second request skips cooled primary"
         );
         assert_eq!(secondary_requests.len(), 2);
     });
@@ -7893,8 +8101,8 @@ fn responses_request_does_not_cooldown_same_provider_upstream_after_400() {
         );
         assert_eq!(
             primary_requests.len(),
-            2,
-            "400 should stay retryable for same-request fallback, but must not cool down the upstream"
+            4,
+            "400 stays retryable without cooldown: each request does same-upstream retry (2×2)"
         );
         assert_eq!(secondary_requests.len(), 2);
     });
@@ -8049,8 +8257,8 @@ fn responses_request_reload_resets_existing_cooldown_and_applies_new_duration() 
         let primary_requests_before_reload = primary.requests();
         assert_eq!(
             primary_requests_before_reload.len(),
-            1,
-            "pre-reload second request should skip cooled-down upstream"
+            2,
+            "first request same-upstream retries once; second request skips cooled primary"
         );
 
         let mut reloaded_config = config;
@@ -8078,8 +8286,8 @@ fn responses_request_reload_resets_existing_cooldown_and_applies_new_duration() 
 
         assert_eq!(
             primary_requests.len(),
-            3,
-            "reload should clear old cooldowns, and zero cooldown should allow primary to be retried on every later request"
+            6,
+            "reload clears cooldowns; each later request same-upstream retries once (3 request phases × 2)"
         );
         assert_eq!(secondary_requests.len(), 4);
     });

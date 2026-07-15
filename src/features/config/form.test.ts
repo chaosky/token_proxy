@@ -29,6 +29,15 @@ describe("config/form", () => {
     expect(validate({ ...EMPTY_FORM, retryableFailureCooldownSecs: "15" }).valid).toBe(true);
   });
 
+  it("validates same-upstream retry count as integer 0..5", () => {
+    expect(validate({ ...EMPTY_FORM, sameUpstreamRetryCount: "-1" }).valid).toBe(false);
+    expect(validate({ ...EMPTY_FORM, sameUpstreamRetryCount: "" }).valid).toBe(false);
+    expect(validate({ ...EMPTY_FORM, sameUpstreamRetryCount: "6" }).valid).toBe(false);
+    expect(validate({ ...EMPTY_FORM, sameUpstreamRetryCount: "0" }).valid).toBe(true);
+    expect(validate({ ...EMPTY_FORM, sameUpstreamRetryCount: "1" }).valid).toBe(true);
+    expect(validate({ ...EMPTY_FORM, sameUpstreamRetryCount: "5" }).valid).toBe(true);
+  });
+
   it("validates stream first output timeout as integer >= 1", () => {
     expect(validate({ ...EMPTY_FORM, streamFirstOutputTimeoutSecs: "-1" }).valid).toBe(false);
     expect(validate({ ...EMPTY_FORM, streamFirstOutputTimeoutSecs: "" }).valid).toBe(false);
@@ -156,6 +165,7 @@ describe("config/form", () => {
     expect(payload.cors_enabled).toBe(true);
     expect(payload.model_list_prefix).toBe(true);
     expect(payload.retryable_failure_cooldown_secs).toBe(15);
+    expect(payload.same_upstream_retry_count).toBe(1);
     expect(payload.codex_session_scoped_cooldown_enabled).toBe(false);
     expect(payload.stream_first_output_timeout_secs).toBe(60);
     expect(payload.sync_response_timeout_secs).toBe(300);
@@ -235,6 +245,15 @@ describe("config/form", () => {
     });
 
     expect(payload.retryable_failure_cooldown_secs).toBe(30);
+  });
+
+  it("serializes same-upstream retry count", () => {
+    const payload = toPayload({
+      ...EMPTY_FORM,
+      sameUpstreamRetryCount: "3",
+    });
+
+    expect(payload.same_upstream_retry_count).toBe(3);
   });
 
   it("serializes codex session-scoped cooldown switch", () => {

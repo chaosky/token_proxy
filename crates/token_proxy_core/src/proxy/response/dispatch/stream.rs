@@ -977,7 +977,6 @@ fn stream_first_output_timeout_response(
     response.extensions_mut().insert(RetryableStreamResponse {
         message,
         should_cooldown: true,
-        retry_same_upstream_once: true,
     });
     response
 }
@@ -1033,11 +1032,11 @@ fn responses_prelude_retry_response(
 
     let body = Body::from(responses_prelude_error_body(response_transform, &error));
     let mut response = http::build_response(status, headers.clone(), body);
-    let retry_same_upstream_once = buffered::is_capacity_retry_error(&message, &message);
+    // capacity 类错误不触发跨请求冷却，但仍可原地/跨上游重试。
+    let is_capacity = buffered::is_capacity_retry_error(&message, &message);
     response.extensions_mut().insert(RetryableStreamResponse {
         message,
-        should_cooldown: !retry_same_upstream_once,
-        retry_same_upstream_once,
+        should_cooldown: !is_capacity,
     });
     response
 }
@@ -1130,7 +1129,6 @@ fn stream_error_response(
     response.extensions_mut().insert(RetryableStreamResponse {
         message,
         should_cooldown: true,
-        retry_same_upstream_once: true,
     });
     response
 }

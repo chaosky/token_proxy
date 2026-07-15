@@ -118,7 +118,6 @@ pub(super) async fn build_buffered_response(
         response.extensions_mut().insert(RetryableStreamResponse {
             message,
             should_cooldown: false,
-            retry_same_upstream_once: false,
         });
         return response;
     }
@@ -152,7 +151,6 @@ pub(super) async fn build_buffered_response(
         response.extensions_mut().insert(RetryableStreamResponse {
             message,
             should_cooldown: false,
-            retry_same_upstream_once: true,
         });
     }
     response
@@ -888,7 +886,6 @@ async fn read_upstream_bytes(
             response.extensions_mut().insert(RetryableStreamResponse {
                 message,
                 should_cooldown: true,
-                retry_same_upstream_once: true,
             });
             return Err(response);
         }
@@ -926,7 +923,6 @@ async fn read_upstream_bytes(
                 response.extensions_mut().insert(RetryableStreamResponse {
                     message,
                     should_cooldown: true,
-                    retry_same_upstream_once: true,
                 });
             }
             return Err(response);
@@ -963,7 +959,6 @@ fn respond_codex_images_transform_error(
         response.extensions_mut().insert(RetryableStreamResponse {
             message: error_message,
             should_cooldown: false,
-            retry_same_upstream_once: false,
         });
     }
     response

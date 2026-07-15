@@ -317,7 +317,6 @@ fn into_group_retryable_kiro_outcome(outcome: AttemptOutcome) -> AttemptOutcome 
                 response: Some(response),
                 is_timeout: false,
                 should_cooldown: super::result::should_cooldown_retryable_status(status),
-                retry_same_upstream_once: false,
             }
         }
         other => other,
