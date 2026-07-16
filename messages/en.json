@@ -576,5 +576,16 @@
   "providers_save_proxy_url": "Save proxy URL",
   "providers_accounts_delete_title": "Delete accounts?",
   "providers_accounts_delete_description": "This will delete {count} accounts.",
-  "providers_accounts_delete_success": "Successfully deleted {count} accounts."
+  "providers_accounts_delete_success": "Successfully deleted {count} accounts.",
+  "storage_usage_title": "Storage usage",
+  "storage_usage_desc": "Size of the app data directory so you can see when data.db grows large.",
+  "storage_usage_data_dir_label": "Data directory",
+  "storage_usage_total_label": "Total",
+  "storage_usage_database_label": "Database (data.db)",
+  "storage_usage_config_label": "Config (config.jsonc)",
+  "storage_usage_other_label": "Other (accounts, etc.)",
+  "storage_usage_refresh": "Refresh storage usage",
+  "storage_usage_loading": "Measuring storage…",
+  "storage_usage_error": "Failed to read storage usage: {message}",
+  "storage_usage_hint": "Successful request logs are kept permanently; error logs and request details follow retention cleanup."
 }

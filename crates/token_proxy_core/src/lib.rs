@@ -10,6 +10,7 @@ pub mod logging;
 pub mod oauth_util;
 pub mod paths;
 pub mod provider_accounts;
+pub mod storage_usage;
 
 pub mod agent_node;
 pub mod codex;

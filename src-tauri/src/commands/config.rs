@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tauri::Manager;
+use token_proxy_core::storage_usage::DataStorageUsage;
 
 use crate::{app_proxy, client_config, logging, proxy, tray};
 
@@ -12,6 +13,17 @@ pub async fn read_proxy_config(
 ) -> Result<proxy::config::ConfigResponse, String> {
     let paths = app.state::<Arc<token_proxy_core::paths::TokenProxyPaths>>();
     proxy::config::read_config(paths.inner().as_ref()).await
+}
+
+/// 返回应用数据目录占用（总大小 + 数据库/配置/其它分项）。
+#[tauri::command]
+pub async fn read_data_storage_usage(app: tauri::AppHandle) -> Result<DataStorageUsage, String> {
+    let paths = app.state::<Arc<token_proxy_core::paths::TokenProxyPaths>>();
+    let paths = paths.inner().clone();
+    // 目录 walk 是同步 IO；放到 blocking 线程避免卡住 async runtime。
+    tokio::task::spawn_blocking(move || token_proxy_core::storage_usage::measure_data_storage(&paths))
+        .await
+        .map_err(|err| format!("Failed to join storage usage task: {err}"))?
 }
 
 #[tauri::command]

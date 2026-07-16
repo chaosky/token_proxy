@@ -21,6 +21,7 @@ import {
   AutoStartCard,
   ProjectLinksCard,
   ProxyCoreCard,
+  StorageUsageCard,
   TrayTokenRateCard,
   UpdateCard,
   UpstreamsCard,
@@ -269,6 +270,7 @@ function ConfigSectionBody({
             savedAt={props.savedAt}
             isDirty={props.isDirty}
           />
+          <StorageUsageCard />
           <AutoStartCard
             enabled={props.autoStartEnabled}
             status={props.autoStartStatus}

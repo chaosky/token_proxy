@@ -19,8 +19,8 @@ pub use codex::{
     codex_set_proxy_url, codex_set_status, codex_start_login,
 };
 pub use config::{
-    preview_client_setup, read_default_hot_model_mappings, read_proxy_config, save_proxy_config,
-    write_claude_code_settings, write_codex_config,
+    preview_client_setup, read_data_storage_usage, read_default_hot_model_mappings,
+    read_proxy_config, save_proxy_config, write_claude_code_settings, write_codex_config,
 };
 pub use dashboard::{read_dashboard_snapshot, refresh_dashboard_model_discovery};
 pub use kiro::{

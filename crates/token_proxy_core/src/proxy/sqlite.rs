@@ -23,14 +23,12 @@ static SQLITE_POOLS: OnceCell<Mutex<HashMap<PathBuf, SqlitePools>>> = OnceCell::
 const DAY_MS: i64 = 24 * 60 * 60 * 1_000;
 const REQUEST_DETAIL_RETENTION_DAYS: i64 = 7;
 const ERROR_REQUEST_RETENTION_DAYS: i64 = 7;
-const REQUEST_LOG_RETENTION_DAYS: i64 = 90;
 const RETENTION_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Default, Eq, PartialEq)]
 struct RequestLogRetentionStats {
     deleted_error_requests: u64,
     cleared_request_details: u64,
-    deleted_expired_requests: u64,
 }
 
 pub async fn open_read_pool(paths: &TokenProxyPaths) -> Result<SqlitePool, String> {
@@ -86,7 +84,6 @@ fn spawn_request_log_retention(pool: SqlitePool, db_path: PathBuf) {
                     database = %db_path.display(),
                     deleted_error_requests = stats.deleted_error_requests,
                     cleared_request_details = stats.cleared_request_details,
-                    deleted_expired_requests = stats.deleted_expired_requests,
                     elapsed_ms = started_at.elapsed().as_millis(),
                     "request log retention completed"
                 ),
@@ -108,7 +105,6 @@ async fn retain_request_logs(
 ) -> Result<RequestLogRetentionStats, String> {
     let detail_cutoff_ms = now_ms.saturating_sub(REQUEST_DETAIL_RETENTION_DAYS * DAY_MS);
     let error_cutoff_ms = now_ms.saturating_sub(ERROR_REQUEST_RETENTION_DAYS * DAY_MS);
-    let log_cutoff_ms = now_ms.saturating_sub(REQUEST_LOG_RETENTION_DAYS * DAY_MS);
     let mut transaction = pool
         .begin()
         .await
@@ -123,21 +119,23 @@ async fn retain_request_logs(
             .map_err(|error| format!("Failed to delete expired error requests: {error}"))?
             .rows_affected();
 
-    let deleted_expired_requests = sqlx::query("DELETE FROM request_logs WHERE ts_ms < ?;")
-        .bind(log_cutoff_ms)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| format!("Failed to delete expired request logs: {error}"))?
-        .rows_affected();
-
-    // 非错误请求保留统计字段，但七天后移除完整请求与响应内容。
+    // 成功请求永久保留统计字段（含 usage_json）；七天后只清临时排障字段。
+    // client_ip 属隐私/排障信息，不参与长期用量与成本统计，一并清空。
     let cleared_request_details = sqlx::query(
         r#"
 UPDATE request_logs
-SET request_headers = NULL, request_body = NULL, response_body = NULL
+SET request_headers = NULL,
+    request_body = NULL,
+    response_body = NULL,
+    client_ip = NULL
 WHERE status < 400
   AND ts_ms < ?
-  AND (request_headers IS NOT NULL OR request_body IS NOT NULL OR response_body IS NOT NULL);
+  AND (
+    request_headers IS NOT NULL
+    OR request_body IS NOT NULL
+    OR response_body IS NOT NULL
+    OR client_ip IS NOT NULL
+  );
 "#,
     )
     .bind(detail_cutoff_ms)
@@ -154,7 +152,6 @@ WHERE status < 400
     Ok(RequestLogRetentionStats {
         deleted_error_requests,
         cleared_request_details,
-        deleted_expired_requests,
     })
 }
 
@@ -616,21 +613,25 @@ mod tests {
         ts_ms: i64,
         status: i64,
         detail: &str,
+        client_ip: Option<&str>,
+        usage_json: Option<&str>,
     ) -> i64 {
         sqlx::query(
             r#"
 INSERT INTO request_logs (
-  ts_ms, path, provider, upstream_id, stream, status,
-  request_headers, request_body, response_body, response_error, latency_ms
-) VALUES (?, '/v1/responses', 'openai-response', 'test', 0, ?, ?, ?, ?, ?, 10);
+  ts_ms, path, provider, upstream_id, stream, status, client_ip,
+  request_headers, request_body, response_body, response_error, usage_json, latency_ms
+) VALUES (?, '/v1/responses', 'openai-response', 'test', 0, ?, ?, ?, ?, ?, ?, ?, 10);
 "#,
         )
         .bind(ts_ms)
         .bind(status)
+        .bind(client_ip)
         .bind(detail)
         .bind(detail)
         .bind(detail)
         .bind(detail)
+        .bind(usage_json)
         .execute(pool)
         .await
         .expect("insert retention test log")
@@ -647,16 +648,52 @@ INSERT INTO request_logs (
         init_schema(&pool).await.expect("init schema");
         let now_ms = 100 * DAY_MS;
 
-        let old_error_id =
-            insert_retention_test_log(&pool, now_ms - 8 * DAY_MS, 400, "old error").await;
-        let recent_error_id =
-            insert_retention_test_log(&pool, now_ms - 6 * DAY_MS, 500, "recent error").await;
-        let old_success_id =
-            insert_retention_test_log(&pool, now_ms - 8 * DAY_MS, 200, "old success").await;
-        let old_redirect_id =
-            insert_retention_test_log(&pool, now_ms - 8 * DAY_MS, 399, "old redirect").await;
-        let expired_success_id =
-            insert_retention_test_log(&pool, now_ms - 91 * DAY_MS, 200, "expired success").await;
+        let old_error_id = insert_retention_test_log(
+            &pool,
+            now_ms - 8 * DAY_MS,
+            400,
+            "old error",
+            Some("1.1.1.1"),
+            Some(r#"{"input":1}"#),
+        )
+        .await;
+        let recent_error_id = insert_retention_test_log(
+            &pool,
+            now_ms - 6 * DAY_MS,
+            500,
+            "recent error",
+            Some("2.2.2.2"),
+            Some(r#"{"input":2}"#),
+        )
+        .await;
+        let old_success_id = insert_retention_test_log(
+            &pool,
+            now_ms - 8 * DAY_MS,
+            200,
+            "old success",
+            Some("3.3.3.3"),
+            Some(r#"{"input":3}"#),
+        )
+        .await;
+        let old_redirect_id = insert_retention_test_log(
+            &pool,
+            now_ms - 8 * DAY_MS,
+            399,
+            "old redirect",
+            Some("4.4.4.4"),
+            Some(r#"{"input":4}"#),
+        )
+        .await;
+        // 成功请求永久保留：超过原 90 天窗口也不删行，只清临时排障字段。
+        let ancient_success_id = insert_retention_test_log(
+            &pool,
+            now_ms - 91 * DAY_MS,
+            200,
+            "ancient success",
+            Some("5.5.5.5"),
+            Some(r#"{"input":5}"#),
+        )
+        .await;
 
         let stats = retain_request_logs(&pool, now_ms)
             .await
@@ -666,30 +703,60 @@ INSERT INTO request_logs (
             stats,
             RequestLogRetentionStats {
                 deleted_error_requests: 1,
-                cleared_request_details: 2,
-                deleted_expired_requests: 1,
+                // old_success + old_redirect + ancient_success
+                cleared_request_details: 3,
             }
         );
-        for deleted_id in [old_error_id, expired_success_id] {
-            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM request_logs WHERE id = ?;")
-                .bind(deleted_id)
+        let deleted_error_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM request_logs WHERE id = ?;")
+                .bind(old_error_id)
                 .fetch_one(&pool)
                 .await
-                .expect("count deleted request log");
-            assert_eq!(count, 0);
-        }
+                .expect("count deleted error request log");
+        assert_eq!(deleted_error_count, 0);
 
-        let recent_error_detail: Option<String> =
-            sqlx::query_scalar("SELECT response_error FROM request_logs WHERE id = ?;")
-                .bind(recent_error_id)
-                .fetch_one(&pool)
-                .await
-                .expect("read recent error detail");
-        assert_eq!(recent_error_detail.as_deref(), Some("recent error"));
+        let recent_error = sqlx::query(
+            "SELECT response_error, client_ip, usage_json FROM request_logs WHERE id = ?;",
+        )
+        .bind(recent_error_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read recent error detail");
+        assert_eq!(
+            recent_error
+                .try_get::<Option<String>, _>("response_error")
+                .ok()
+                .flatten()
+                .as_deref(),
+            Some("recent error")
+        );
+        assert_eq!(
+            recent_error
+                .try_get::<Option<String>, _>("client_ip")
+                .ok()
+                .flatten()
+                .as_deref(),
+            Some("2.2.2.2")
+        );
+        assert_eq!(
+            recent_error
+                .try_get::<Option<String>, _>("usage_json")
+                .ok()
+                .flatten()
+                .as_deref(),
+            Some(r#"{"input":2}"#)
+        );
 
-        for retained_id in [old_success_id, old_redirect_id] {
+        for (retained_id, expected_error, expected_usage) in [
+            (old_success_id, "old success", r#"{"input":3}"#),
+            (old_redirect_id, "old redirect", r#"{"input":4}"#),
+            (ancient_success_id, "ancient success", r#"{"input":5}"#),
+        ] {
             let details = sqlx::query(
-                "SELECT request_headers, request_body, response_body, response_error FROM request_logs WHERE id = ?;",
+                r#"
+SELECT request_headers, request_body, response_body, response_error, client_ip, usage_json
+FROM request_logs WHERE id = ?;
+"#,
             )
             .bind(retained_id)
             .fetch_one(&pool)
@@ -718,15 +785,27 @@ INSERT INTO request_logs (
             );
             assert_eq!(
                 details
+                    .try_get::<Option<String>, _>("client_ip")
+                    .ok()
+                    .flatten(),
+                None
+            );
+            assert_eq!(
+                details
                     .try_get::<Option<String>, _>("response_error")
                     .ok()
                     .flatten()
                     .as_deref(),
-                Some(if retained_id == old_success_id {
-                    "old success"
-                } else {
-                    "old redirect"
-                })
+                Some(expected_error)
+            );
+            // usage_json 是长期统计原始事实，永不因 retention 清空。
+            assert_eq!(
+                details
+                    .try_get::<Option<String>, _>("usage_json")
+                    .ok()
+                    .flatten()
+                    .as_deref(),
+                Some(expected_usage)
             );
         }
     }

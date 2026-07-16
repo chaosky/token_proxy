@@ -25,12 +25,16 @@ _Avoid_: Cache activity rate
 _Avoid_: Cached total
 
 **Error Request**:
-最终 HTTP 状态码大于等于 400 的请求记录；它不参与长期请求统计，保留期结束后整条删除。
+最终 HTTP 状态码大于等于 400 的请求记录；它不参与长期请求统计，保留期（7 天）结束后整条删除。
 _Avoid_: 仅以 response_error 是否存在判断错误请求
 
 **Request Detail**:
-为临时排障捕获的请求头、请求体和响应体，不包含请求统计字段或错误摘要。
-_Avoid_: Request Log（请求日志整行）
+为临时排障捕获的请求头、请求体、响应体和客户端 IP；不包含请求统计字段、`usage_json` 或错误摘要。成功请求的 Request Detail 在 7 天后清空，日志行本身永久保留。
+_Avoid_: Request Log（请求日志整行）、Usage Breakdown 原始 JSON
+
+**Success Request Log**:
+`status < 400` 的请求日志行；永久保留，用于长期用量与成本统计。可清空 Request Detail，但不得删除整行，也不得清空 `usage_json` 与规范化 token/成本字段。
+_Avoid_: 成功日志 90 天过期删除
 
 **可用模型白名单**:
 单个上游声明可以接收的入站模型集合。未配置或集合为空表示不限制模型；非空时仅允许精确匹配的模型参与该上游路由。

@@ -17,6 +17,7 @@ vi.mock("@/layouts/site-header", () => ({
 vi.mock("@/features/config/cards", () => ({
   ClientSetupCard: () => <div data-testid="client-setup-card" />,
   ConfigFileCard: () => <div data-testid="config-file-card" />,
+  StorageUsageCard: () => <div data-testid="storage-usage-card" />,
   AutoStartCard: () => <div data-testid="auto-start-card" />,
   ProjectLinksCard: () => <div data-testid="project-links-card" />,
   ProxyCoreCard: () => <div data-testid="proxy-core-card" />,
@@ -166,6 +167,7 @@ describe("config/AppView", () => {
     );
 
     expect(screen.getByTestId("config-file-card")).toBeInTheDocument();
+    expect(screen.getByTestId("storage-usage-card")).toBeInTheDocument();
     expect(screen.queryByTestId("validation-card")).not.toBeInTheDocument();
   });
 

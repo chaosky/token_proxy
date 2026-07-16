@@ -576,5 +576,16 @@
   "providers_account_delete_description": "将删除账户 {label}。",
   "providers_accounts_delete_title": "删除多个账户？",
   "providers_accounts_delete_description": "将删除 {count} 个账户。",
-  "providers_accounts_delete_success": "成功删除 {count} 个账户。"
+  "providers_accounts_delete_success": "成功删除 {count} 个账户。",
+  "storage_usage_title": "存储占用",
+  "storage_usage_desc": "应用数据目录体积，便于判断 data.db 是否过大。",
+  "storage_usage_data_dir_label": "数据目录",
+  "storage_usage_total_label": "合计",
+  "storage_usage_database_label": "数据库 (data.db)",
+  "storage_usage_config_label": "配置 (config.jsonc)",
+  "storage_usage_other_label": "其它（账号等）",
+  "storage_usage_refresh": "刷新存储占用",
+  "storage_usage_loading": "正在计算占用…",
+  "storage_usage_error": "读取存储占用失败：{message}",
+  "storage_usage_hint": "成功请求日志永久保留；错误日志与请求明细会按保留策略清理。"
 }

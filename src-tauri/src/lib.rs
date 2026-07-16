@@ -25,7 +25,7 @@ use commands::{
     kiro_refresh_quota_cache, kiro_refresh_quota_now, kiro_set_priority, kiro_set_proxy_url,
     kiro_set_status, kiro_start_login, prepare_relaunch, preview_client_setup,
     providers_delete_accounts, providers_list_accounts_page, proxy_reload, proxy_restart,
-    proxy_start, proxy_status, proxy_stop, read_dashboard_snapshot,
+    proxy_start, proxy_status, proxy_stop, read_dashboard_snapshot, read_data_storage_usage,
     read_default_hot_model_mappings, read_model_pricing_settings, read_proxy_config,
     read_request_detail_capture, read_request_log_detail, refresh_dashboard_model_discovery,
     reset_model_pricing_settings, save_model_pricing_settings, save_proxy_config,
@@ -257,6 +257,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             read_proxy_config,
+            read_data_storage_usage,
             read_default_hot_model_mappings,
             preview_client_setup,
             write_claude_code_settings,

@@ -1,7 +1,11 @@
 use std::path::{Path, PathBuf};
 
-const CONFIG_FILE_NAME: &str = "config.jsonc";
-const DB_FILE_NAME: &str = "data.db";
+pub const CONFIG_FILE_NAME: &str = "config.jsonc";
+pub const DB_FILE_NAME: &str = "data.db";
+/// SQLite WAL 旁路文件；计入数据库占用。
+pub const DB_WAL_FILE_NAME: &str = "data.db-wal";
+/// SQLite shared-memory 旁路文件；计入数据库占用。
+pub const DB_SHM_FILE_NAME: &str = "data.db-shm";
 
 /// Token Proxy 的路径集合（Ports & Adapters 的最小“路径端口”）。
 ///
