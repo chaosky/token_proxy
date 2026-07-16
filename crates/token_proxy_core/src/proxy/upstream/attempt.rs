@@ -16,6 +16,23 @@ use crate::proxy::{
     config::UpstreamRuntime, cooldown_scope::CooldownScope, ProxyState, RequestMeta,
 };
 
+/// 发送前注册 token rate 窗口：先只计 connections，input 等响应阶段再写。
+async fn register_token_tracker_for_attempt(
+    state: &ProxyState,
+    meta: &RequestMeta,
+) -> crate::proxy::token_rate::RequestTokenTracker {
+    let model_for_tokens = meta
+        .mapped_model
+        .as_deref()
+        .or(meta.original_model.as_deref())
+        .map(|value| value.to_string());
+    tracing::debug!(
+        model = model_for_tokens.as_deref().unwrap_or(""),
+        "token_rate register before upstream send"
+    );
+    state.token_rate.register(model_for_tokens, None).await
+}
+
 pub(super) async fn attempt_upstream(
     state: &ProxyState,
     method: Method,
@@ -157,9 +174,11 @@ pub(super) async fn attempt_send(
         codex_openai_device_id,
         meta,
     } = prepared;
+    // 在真正发上游前 register，TTFB 期间托盘也能显示 connections（↑ fallback）。
+    let token_tracker = register_token_tracker_for_attempt(state, &meta).await;
     let start_time = Instant::now();
     let timings = RequestTimings::default();
-    let response = send_upstream_request(
+    let response = match send_upstream_request(
         state,
         method,
         provider,
@@ -179,15 +198,23 @@ pub(super) async fn attempt_send(
         cooldown_scope,
     )
     .await
-    .map_err(|outcome| UpstreamAttemptFailure {
-        outcome,
-        selected_account_id: selected_account_id.clone(),
-    })?;
+    {
+        Ok(response) => response,
+        Err(outcome) => {
+            // 发送失败：drop tracker，active 回落。
+            drop(token_tracker);
+            return Err(UpstreamAttemptFailure {
+                outcome,
+                selected_account_id: selected_account_id.clone(),
+            });
+        }
+    };
     Ok(UpstreamAttempt {
         response,
         selected_account_id,
         meta,
         start_time,
         timings,
+        token_tracker,
     })
 }

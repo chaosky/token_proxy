@@ -374,12 +374,15 @@ fn start_token_rate_loop(tray_state: TrayState, loop_id: u64) {
     let token_rate = tray_state.inner.token_rate.clone();
     tauri::async_runtime::spawn(async move {
         let mut activity_rx = token_rate.subscribe_activity();
+        // 与 TokenRateTracker 的 RATE_WINDOW 对齐：请求结束后再刷约 1s，避免标题卡在残留速率。
+        const RATE_WINDOW_DRAIN: Duration = Duration::from_millis(1100);
+        const TICK: Duration = Duration::from_millis(333);
         'main: loop {
             if !tray_state.should_keep_token_rate_loop(loop_id) {
                 break 'main;
             }
             if token_rate.has_active_requests() {
-                let mut interval = tokio::time::interval(Duration::from_millis(333));
+                let mut interval = tokio::time::interval(TICK);
                 loop {
                     interval.tick().await;
                     if !tray_state.should_keep_token_rate_loop(loop_id) {
@@ -390,6 +393,25 @@ fn start_token_rate_loop(tray_state: TrayState, loop_id: u64) {
                         break;
                     }
                 }
+                // 活跃请求刚结束：继续刷满滑动窗口，把残留 token 速率归零。
+                tracing::debug!("tray token rate drain residual window after active requests end");
+                let drain_deadline = tokio::time::Instant::now() + RATE_WINDOW_DRAIN;
+                let mut drain_interval = tokio::time::interval(TICK);
+                loop {
+                    if !tray_state.should_keep_token_rate_loop(loop_id) {
+                        break 'main;
+                    }
+                    if token_rate.has_active_requests() {
+                        // 新请求进来，回到主循环继续高频刷新。
+                        continue 'main;
+                    }
+                    if tokio::time::Instant::now() >= drain_deadline {
+                        break;
+                    }
+                    drain_interval.tick().await;
+                    tray_state.update_token_rate_title().await;
+                }
+                tray_state.update_token_rate_title().await;
                 continue;
             }
 

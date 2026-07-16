@@ -16,7 +16,7 @@ use crate::proxy::response::{
     build_proxy_response, build_proxy_response_buffered, NonRetryableSemanticResponse,
     RetryableStreamResponse,
 };
-use crate::proxy::token_rate::TokenRateTracker;
+use crate::proxy::token_rate::RequestTokenTracker;
 use crate::proxy::ProxyState;
 use crate::proxy::RequestMeta;
 
@@ -48,7 +48,7 @@ pub(super) async fn handle_upstream_result(
     account_id: Option<String>,
     inbound_path: &str,
     log: Arc<LogWriter>,
-    token_rate: Arc<TokenRateTracker>,
+    request_tracker: RequestTokenTracker,
     start_time: Instant,
     timings: RequestTimings,
     client_gemini_api_key: Option<&str>,
@@ -77,7 +77,7 @@ pub(super) async fn handle_upstream_result(
                 inbound_path,
                 res,
                 log,
-                token_rate,
+                request_tracker,
                 start_time,
                 timings.clone(),
                 &proxy_base_url,
@@ -120,7 +120,7 @@ pub(super) async fn handle_upstream_result(
                 inbound_path,
                 res,
                 log,
-                token_rate,
+                request_tracker,
                 start_time,
                 timings,
                 &proxy_base_url,
@@ -161,6 +161,8 @@ pub(super) async fn handle_upstream_result(
             AttemptOutcome::Success(response)
         }
         Err(err) if is_retryable_error(&err) => {
+            // 无 response body 可统计，释放发送前 register 的窗口。
+            drop(request_tracker);
             let message = sanitize_upstream_error(provider, &err);
             let status = if err.is_timeout() {
                 StatusCode::GATEWAY_TIMEOUT
@@ -194,6 +196,7 @@ pub(super) async fn handle_upstream_result(
             }
         }
         Err(err) => {
+            drop(request_tracker);
             let message = sanitize_upstream_error(provider, &err);
             log_upstream_error_if_needed(
                 &log,

@@ -112,6 +112,7 @@ pub(super) async fn handle_send_error(
 ) -> AttemptOutcome {
     match err {
         KiroSendError::Upstream(err) => {
+            // 发送错误路径无有效 tracker 生命周期，使用 disabled 占位。
             result::handle_upstream_result(
                 state,
                 Err(err),
@@ -121,7 +122,7 @@ pub(super) async fn handle_send_error(
                 account_id.clone(),
                 inbound_path,
                 state.log.clone(),
-                state.token_rate.clone(),
+                crate::proxy::token_rate::RequestTokenTracker::disabled(),
                 start_time,
                 Default::default(),
                 None,

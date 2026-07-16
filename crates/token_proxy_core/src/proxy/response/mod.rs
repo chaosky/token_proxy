@@ -12,7 +12,7 @@ use super::{
     openai,
     openai_compat::FormatTransform,
     request_detail::RequestDetailSnapshot,
-    token_rate::TokenRateTracker,
+    token_rate::RequestTokenTracker,
     RequestMeta,
 };
 
@@ -45,7 +45,7 @@ pub(super) async fn build_proxy_response(
     inbound_path: &str,
     upstream_res: reqwest::Response,
     log: Arc<LogWriter>,
-    token_rate: Arc<TokenRateTracker>,
+    request_tracker: RequestTokenTracker,
     start: Instant,
     timings: RequestTimings,
     proxy_base_url: &str,
@@ -89,14 +89,8 @@ pub(super) async fn build_proxy_response(
         // The body will change; let hyper recalculate the content length.
         response_headers.remove(axum::http::header::CONTENT_LENGTH);
     }
-    let model_for_tokens = meta
-        .mapped_model
-        .as_deref()
-        .or(meta.original_model.as_deref())
-        .map(|value| value.to_string());
-    let request_tracker = token_rate
-        .register(model_for_tokens, meta.estimated_input_tokens)
-        .await;
+    // tracker 在上游发送前已 register（计 connections）；此处再写入 input 估计。
+    apply_estimated_input_tokens(&request_tracker, meta.estimated_input_tokens).await;
     let should_stream = meta.stream
         && !status.is_client_error()
         && !status.is_server_error()
@@ -144,7 +138,7 @@ pub(super) async fn build_proxy_response_buffered(
     inbound_path: &str,
     upstream_res: reqwest::Response,
     log: Arc<LogWriter>,
-    token_rate: Arc<TokenRateTracker>,
+    request_tracker: RequestTokenTracker,
     start: Instant,
     timings: RequestTimings,
     proxy_base_url: &str,
@@ -186,14 +180,7 @@ pub(super) async fn build_proxy_response_buffered(
     if response_transform != FormatTransform::None {
         response_headers.remove(axum::http::header::CONTENT_LENGTH);
     }
-    let model_for_tokens = meta
-        .mapped_model
-        .as_deref()
-        .or(meta.original_model.as_deref())
-        .map(|value| value.to_string());
-    let request_tracker = token_rate
-        .register(model_for_tokens, meta.estimated_input_tokens)
-        .await;
+    apply_estimated_input_tokens(&request_tracker, meta.estimated_input_tokens).await;
     dispatch::build_buffered_response(
         status,
         upstream_res,
@@ -208,6 +195,15 @@ pub(super) async fn build_proxy_response_buffered(
         sync_response_timeout,
     )
     .await
+}
+
+/// 响应阶段写入 prompt 估计；发送前 register 时不写，保证 TTFB 期间 ↑ 能显示 connections。
+async fn apply_estimated_input_tokens(tracker: &RequestTokenTracker, estimated: Option<u64>) {
+    let Some(tokens) = estimated.filter(|value| *value > 0) else {
+        return;
+    };
+    tracing::debug!(tokens, "token_rate apply estimated input tokens");
+    tracker.add_input_tokens(tokens).await;
 }
 
 fn maybe_rewrite_gemini_upload_url(

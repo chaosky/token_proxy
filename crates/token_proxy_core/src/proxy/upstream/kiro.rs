@@ -160,7 +160,7 @@ async fn attempt_endpoint(
     };
 
     for attempt in 0..=MAX_KIRO_RETRIES {
-        let (response, start_time, timings) =
+        let (response, start_time, timings, token_tracker) =
             match send_endpoint_request(context, endpoint, &payload.payload).await {
                 Ok(result) => result,
                 Err(outcome) => return EndpointOutcome::Done(outcome),
@@ -168,17 +168,23 @@ async fn attempt_endpoint(
 
         match handle_response_action(context, response, start_time, attempt, is_last).await {
             ResponseAction::RetryAfter(delay) => {
+                // 本轮不 finalize，释放 TTFB 期间的 connections 计数。
+                drop(token_tracker);
                 tokio::time::sleep(delay).await;
                 continue;
             }
             ResponseAction::RefreshAndRetry => {
+                drop(token_tracker);
                 match refresh_and_rebuild_payload(context, endpoint).await {
                     Ok(updated) => payload = updated,
                     Err(outcome) => return EndpointOutcome::Done(outcome),
                 }
                 continue;
             }
-            ResponseAction::NextEndpoint => return EndpointOutcome::Continue,
+            ResponseAction::NextEndpoint => {
+                drop(token_tracker);
+                return EndpointOutcome::Continue;
+            }
             ResponseAction::Finalize(response, start_time) => {
                 return EndpointOutcome::Done(
                     finalize_response(
@@ -193,11 +199,15 @@ async fn attempt_endpoint(
                         false,
                         start_time,
                         timings,
+                        token_tracker,
                     )
                     .await,
                 );
             }
-            ResponseAction::Return(outcome) => return EndpointOutcome::Done(outcome),
+            ResponseAction::Return(outcome) => {
+                drop(token_tracker);
+                return EndpointOutcome::Done(outcome);
+            }
         }
     }
 
@@ -211,7 +221,32 @@ async fn send_endpoint_request(
     context: &KiroContext<'_>,
     endpoint: &KiroEndpointConfig,
     payload: &[u8],
-) -> Result<(reqwest::Response, Instant, RequestTimings), AttemptOutcome> {
+) -> Result<
+    (
+        reqwest::Response,
+        Instant,
+        RequestTimings,
+        crate::proxy::token_rate::RequestTokenTracker,
+    ),
+    AttemptOutcome,
+> {
+    let model_for_tokens = context
+        .mapped_meta
+        .mapped_model
+        .as_deref()
+        .or(context.mapped_meta.original_model.as_deref())
+        .map(|value| value.to_string());
+    // 发送前 register，保证 Kiro TTFB 期间托盘 connections 可见。
+    let token_tracker = context
+        .state
+        .token_rate
+        .register(model_for_tokens, None)
+        .await;
+    tracing::debug!(
+        account_id = %context.account_id,
+        endpoint = %endpoint.url,
+        "token_rate register before kiro send"
+    );
     let start_time = Instant::now();
     let timings = RequestTimings::default();
     let response = match send_kiro_request(
@@ -232,6 +267,7 @@ async fn send_endpoint_request(
             response
         }
         Err(err) => {
+            drop(token_tracker);
             let outcome = handle_send_error(
                 context.state,
                 &context.mapped_meta,
@@ -247,7 +283,7 @@ async fn send_endpoint_request(
             return Err(outcome);
         }
     };
-    Ok((response, start_time, timings))
+    Ok((response, start_time, timings, token_tracker))
 }
 
 fn should_failover_kiro_account(outcome: &AttemptOutcome) -> bool {

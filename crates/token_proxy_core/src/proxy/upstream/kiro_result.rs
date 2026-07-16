@@ -5,6 +5,7 @@ use crate::proxy::http;
 use crate::proxy::log::RequestTimings;
 use crate::proxy::openai_compat::FormatTransform;
 use crate::proxy::request_detail::RequestDetailSnapshot;
+use crate::proxy::token_rate::RequestTokenTracker;
 use crate::proxy::{config::UpstreamRuntime, ProxyState, RequestMeta};
 use axum::body::{Body, Bytes};
 use axum::http::StatusCode;
@@ -68,6 +69,7 @@ pub(super) async fn finalize_response(
     force_success: bool,
     start_time: Instant,
     timings: RequestTimings,
+    request_tracker: RequestTokenTracker,
 ) -> AttemptOutcome {
     if force_success {
         let proxy_base_url = crate::proxy::http::local_proxy_base_url(&state.config);
@@ -79,7 +81,7 @@ pub(super) async fn finalize_response(
             inbound_path,
             response,
             state.log.clone(),
-            state.token_rate.clone(),
+            request_tracker,
             start_time,
             timings.clone(),
             &proxy_base_url,
@@ -101,7 +103,7 @@ pub(super) async fn finalize_response(
         account_id,
         inbound_path,
         state.log.clone(),
-        state.token_rate.clone(),
+        request_tracker,
         start_time,
         timings,
         None,

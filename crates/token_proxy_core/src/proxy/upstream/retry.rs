@@ -9,6 +9,7 @@ use super::{attempt, result, AttemptOutcome};
 use crate::proxy::cooldown_scope::CooldownScope;
 use crate::proxy::http;
 use crate::proxy::log::RequestTimings;
+use crate::proxy::token_rate::RequestTokenTracker;
 
 pub(super) struct UpstreamAttempt {
     pub(super) response: reqwest::Response,
@@ -16,6 +17,8 @@ pub(super) struct UpstreamAttempt {
     pub(super) meta: RequestMeta,
     pub(super) start_time: std::time::Instant,
     pub(super) timings: RequestTimings,
+    /// 发送上游前已 register，覆盖 TTFB；成功后移入 response stream。
+    pub(super) token_tracker: RequestTokenTracker,
 }
 
 pub(super) struct UpstreamAttemptFailure {
@@ -112,7 +115,7 @@ pub(super) async fn finalize_attempt(
         attempt.selected_account_id.clone(),
         inbound_path,
         state.log.clone(),
-        state.token_rate.clone(),
+        attempt.token_tracker,
         attempt.start_time,
         attempt.timings,
         client_gemini_api_key,

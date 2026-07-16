@@ -210,6 +210,9 @@ impl TokenRateTracker {
         let removed = self.inner.requests.write().await.remove(&id).is_some();
         if removed {
             self.inner.active.fetch_sub(1, Ordering::SeqCst);
+            // 请求结束也要唤醒托盘，否则会停在最后一次非零速率。
+            self.notify_activity();
+            tracing::debug!(id, "token_rate unregistered request window");
         }
     }
 
@@ -399,6 +402,9 @@ impl Drop for RequestTokenTracker {
         if let Ok(mut guard) = self.tracker.inner.requests.try_write() {
             if guard.remove(&id).is_some() {
                 self.tracker.inner.active.fetch_sub(1, Ordering::SeqCst);
+                // 同步路径也通知托盘刷新，避免 active 归零后标题卡住。
+                self.tracker.notify_activity();
+                tracing::debug!(id, "token_rate drop unregistered request window");
             }
             return;
         }
@@ -436,4 +442,36 @@ fn disabled_tracker() -> TokenRateTracker {
             }
         })
         .clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn register_without_input_counts_connection_only() {
+        let rate = TokenRateTracker::new();
+        let tracker = rate.register(Some("gpt-test".to_string()), None).await;
+        let snapshot = rate.snapshot().await;
+        assert_eq!(snapshot.connections, 1);
+        assert_eq!(snapshot.input, 0);
+        assert_eq!(snapshot.output, 0);
+        assert!(rate.has_active_requests());
+        drop(tracker);
+        // Drop 后 active 归零，托盘可显示 0 connections。
+        let snapshot = rate.snapshot().await;
+        assert_eq!(snapshot.connections, 0);
+        assert!(!rate.has_active_requests());
+    }
+
+    #[tokio::test]
+    async fn add_input_after_register_updates_window() {
+        let rate = TokenRateTracker::new();
+        let tracker = rate.register(None, None).await;
+        tracker.add_input_tokens(42).await;
+        let snapshot = rate.snapshot().await;
+        assert_eq!(snapshot.input, 42);
+        assert_eq!(snapshot.connections, 1);
+        drop(tracker);
+    }
 }
